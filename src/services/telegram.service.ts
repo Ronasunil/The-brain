@@ -95,7 +95,11 @@ export const TelegramBotService = {
     // Remove trigger prefix
     if (question.toLowerCase().startsWith(trigger)) {
       question = question.slice(trigger.length);
-    } else if (question.startsWith("/ask") || question.startsWith("/brain") || question.startsWith("/search")) {
+    } else if (
+      question.startsWith("/ask") ||
+      question.startsWith("/brain") ||
+      question.startsWith("/search")
+    ) {
       question = question.replace(/^\/(ask|brain|search)\s*/i, "");
     }
 
@@ -129,7 +133,10 @@ export const TelegramBotService = {
   /**
    * Answer a question using the brain.
    */
-  async answerQuestion(msg: TelegramBot.Message, rawText: string): Promise<void> {
+  async answerQuestion(
+    msg: TelegramBot.Message,
+    rawText: string,
+  ): Promise<void> {
     const telegramBot = getBot();
     const chatId = msg.chat.id;
 

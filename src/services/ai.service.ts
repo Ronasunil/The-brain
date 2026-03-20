@@ -42,7 +42,10 @@ export const AIService = {
    * Generate an answer from context messages.
    * Sends relevant messages as context + the user's question to the LLM.
    */
-  async generateAnswer(question: string, searchResults: SearchResult[]): Promise<string> {
+  async generateAnswer(
+    question: string,
+    searchResults: SearchResult[],
+  ): Promise<string> {
     const client = getOpenAI();
 
     // Build context from search results
@@ -58,9 +61,10 @@ export const AIService = {
       })
       .join("\n");
 
-    const userPrompt = contextMessages.length > 0
-      ? `Context messages from company conversations:\n${contextMessages}\n\nQuestion: ${question}`
-      : `No relevant context found in company conversations.\n\nQuestion: ${question}`;
+    const userPrompt =
+      contextMessages.length > 0
+        ? `Context messages from company conversations:\n${contextMessages}\n\nQuestion: ${question}`
+        : `No relevant context found in company conversations.\n\nQuestion: ${question}`;
 
     const response = await client.chat.completions.create({
       model: CHAT_MODEL,
@@ -72,6 +76,8 @@ export const AIService = {
       max_tokens: 500,
     });
 
-    return response.choices[0]?.message?.content || "I couldn't generate an answer.";
+    return (
+      response.choices[0]?.message?.content || "I couldn't generate an answer."
+    );
   },
 };

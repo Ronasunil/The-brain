@@ -9,26 +9,35 @@
     "start": "node dist/server.js",
     "db:migrate": "tsx src/db/migrate.ts"
   },
-  "keywords": ["ai", "knowledge", "telegram", "bot", "organizational-memory"],
+  "keywords": [
+    "ai",
+    "knowledge",
+    "telegram",
+    "bot",
+    "organizational-memory"
+  ],
   "license": "MIT",
   "dependencies": {
-    "express": "^4.21.0",
-    "zod": "^3.23.8",
-    "openai": "^4.73.0",
-    "node-telegram-bot-api": "^0.66.0",
     "@supabase/supabase-js": "^2.46.0",
-    "dotenv": "^16.4.5",
-    "helmet": "^8.0.0",
     "cors": "^2.8.5",
-    "morgan": "^1.10.0"
+    "dotenv": "^16.4.5",
+    "express": "^4.21.0",
+    "helmet": "^8.0.0",
+    "http-status-codes": "^2.3.0",
+    "morgan": "^1.10.0",
+    "node-telegram-bot-api": "^0.66.0",
+    "openai": "^4.73.0",
+    "stream-json": "^2.0.0",
+    "zod": "^3.23.8"
   },
   "devDependencies": {
-    "typescript": "^5.6.0",
+    "@types/cors": "^2.8.17",
     "@types/express": "^5.0.0",
+    "@types/morgan": "^1.9.9",
     "@types/node": "^22.0.0",
     "@types/node-telegram-bot-api": "^0.64.0",
-    "@types/cors": "^2.8.17",
-    "@types/morgan": "^1.9.9",
-    "tsx": "^4.19.0"
+    "@types/stream-json": "^1.7.8",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0"
   }
 }

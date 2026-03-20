@@ -1,7 +1,13 @@
 /**
  * Message source platforms.
  */
-export const MESSAGE_SOURCES = ["telegram", "slack", "github", "linear", "manual"] as const;
+export const MESSAGE_SOURCES = [
+  "telegram",
+  "slack",
+  "github",
+  "linear",
+  "manual",
+] as const;
 export type MessageSource = (typeof MESSAGE_SOURCES)[number];
 
 /**

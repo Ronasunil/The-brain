@@ -2,7 +2,7 @@
 
 OrgBrain captures your team's conversations and turns them into searchable knowledge. Ask questions in chat and get instant answers with sources.
 
-> *"Our team lost two days because nobody knew where the DNS was managed."*
+> _"Our team lost two days because nobody knew where the DNS was managed."_
 >
 > OrgBrain solves this in 5 seconds.
 
@@ -45,12 +45,12 @@ Telegram Reply
 
 ## Tech Stack
 
-| Layer     | Technology                   |
-| --------- | ---------------------------- |
-| Backend   | Node.js + Express + TypeScript |
-| Database  | Supabase (PostgreSQL + pgvector) |
-| AI        | OpenAI (embeddings + GPT-4o-mini) |
-| Bot       | Telegram Bot API (polling)   |
+| Layer    | Technology                        |
+| -------- | --------------------------------- |
+| Backend  | Node.js + Express + TypeScript    |
+| Database | Supabase (PostgreSQL + pgvector)  |
+| AI       | OpenAI (embeddings + GPT-4o-mini) |
+| Bot      | Telegram Bot API (polling)        |
 
 ## Project Structure
 
@@ -206,12 +206,12 @@ Response:
 
 ## Bot Commands
 
-| Command | Description |
-| ------- | ----------- |
-| `@orgbrain <question>` | Ask a question |
-| `/ask <question>` | Ask a question |
-| `/brain <question>` | Ask a question |
-| `/search <question>` | Search knowledge |
+| Command                | Description      |
+| ---------------------- | ---------------- |
+| `@orgbrain <question>` | Ask a question   |
+| `/ask <question>`      | Ask a question   |
+| `/brain <question>`    | Ask a question   |
+| `/search <question>`   | Search knowledge |
 
 ## Roadmap
 
