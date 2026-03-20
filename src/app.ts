@@ -2,28 +2,22 @@ import express from "express";
 import helmet from "helmet";
 import cors from "cors";
 import morgan from "morgan";
-import { healthRouter } from "./routes/health.route";
-import { brainRouter } from "./routes/brain.route";
+
+import { mainRouter } from "./routes/main.route";
+import { globalErrorHandler, handleInvalidRoutes } from "./error/error.handler";
 
 const app = express();
 
-// ─── Global Middleware ──────────────────────────────
+
 app.use(helmet());
 app.use(cors());
 app.use(morgan("dev"));
 app.use(express.json());
 
-// ─── Routes ─────────────────────────────────────────
-app.use("/api/health", healthRouter);
-app.use("/api/brain", brainRouter);
 
-// ─── 404 Handler ────────────────────────────────────
-app.use((_req, res) => {
-  res.status(404).json({
-    status: 404,
-    data: null,
-    message: "Route not found",
-  });
-});
+app.use("/api", mainRouter);
+
+app.all("*", handleInvalidRoutes);
+app.use(globalErrorHandler);
 
 export { app };
