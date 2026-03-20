@@ -172,6 +172,7 @@ export const MessageRepository = {
       .limit(limit);
 
     if (error) {
+      console.log(error)
       throw new Error(`Failed to fetch unembedded messages: ${error.message}`);
     }
 

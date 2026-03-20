@@ -7,3 +7,10 @@ export type {
   BrainAnswer,
 } from "./message.types";
 export { MESSAGE_SOURCES } from "./message.types";
+export type {
+  AIProvider,
+  AIProviderConfig,
+  AIProviderName,
+  ChatCompletionOptions,
+} from "./ai.types";
+export { AI_PROVIDERS } from "./ai.types";

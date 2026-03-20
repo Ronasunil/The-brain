@@ -1,3 +1,5 @@
+import CustomError from "./custom-error";
+
 class AppError extends CustomError {
     statusCode: number;
     constructor(message: string, statusCode: number) {

@@ -1,41 +1,22 @@
-import OpenAI from "openai";
-import { env } from "../config/env";
-import {
-  EMBEDDING_MODEL,
-  EMBEDDING_DIMENSIONS,
-  CHAT_MODEL,
-  SYSTEM_PROMPT,
-} from "../lib/constants/app.constants";
+import { getAIProvider } from "../providers";
+import { SYSTEM_PROMPT } from "../lib/constants/app.constants";
 import { SearchResult } from "../lib/types";
 
-let openai: OpenAI;
-
-function getOpenAI(): OpenAI {
-  if (!openai) {
-    openai = new OpenAI({ apiKey: env.OPENAI_API_KEY });
-  }
-  return openai;
-}
-
 /**
- * AI Service — handles all OpenAI interactions.
- * Embeddings + chat completions.
+ * AI Service — provider-agnostic AI operations.
+ *
+ * Uses whichever provider is configured in AI_PROVIDER env var.
+ * Set AI_PROVIDER=openai for OpenAI, AI_PROVIDER=xai for Grok.
+ * No code changes needed to switch — just change the env var.
  */
 export const AIService = {
   /**
    * Generate embedding vector for a text string.
-   * Uses text-embedding-3-small (1536 dimensions).
+   * Dimensions depend on the active provider's config.
    */
   async createEmbedding(text: string): Promise<number[]> {
-    const client = getOpenAI();
-
-    const response = await client.embeddings.create({
-      model: EMBEDDING_MODEL,
-      input: text,
-      dimensions: EMBEDDING_DIMENSIONS,
-    });
-
-    return response.data[0].embedding;
+    const provider = getAIProvider();
+    return provider.createEmbedding(text);
   },
 
   /**
@@ -46,7 +27,7 @@ export const AIService = {
     question: string,
     searchResults: SearchResult[],
   ): Promise<string> {
-    const client = getOpenAI();
+    const provider = getAIProvider();
 
     // Build context from search results
     const contextMessages = searchResults
@@ -66,18 +47,9 @@ export const AIService = {
         ? `Context messages from company conversations:\n${contextMessages}\n\nQuestion: ${question}`
         : `No relevant context found in company conversations.\n\nQuestion: ${question}`;
 
-    const response = await client.chat.completions.create({
-      model: CHAT_MODEL,
-      messages: [
-        { role: "system", content: SYSTEM_PROMPT },
-        { role: "user", content: userPrompt },
-      ],
+    return provider.generateChatCompletion(SYSTEM_PROMPT, userPrompt, {
       temperature: 0.3,
-      max_tokens: 500,
+      maxTokens: 500,
     });
-
-    return (
-      response.choices[0]?.message?.content || "I couldn't generate an answer."
-    );
   },
 };

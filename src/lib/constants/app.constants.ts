@@ -1,4 +1,29 @@
-// ─── AI Constants ───────────────────────────────────────────────
+import { AIProviderName, AIProviderConfig } from "../types/ai.types";
+
+// ─── AI Provider Configs ────────────────────────────────────────
+export const AI_PROVIDER_CONFIGS: Record<
+  AIProviderName,
+  Omit<AIProviderConfig, "apiKey">
+> = {
+  openai: {
+    embeddingModel: "text-embedding-3-small",
+    embeddingDimensions: 1536,
+    chatModel: "gpt-4o-mini",
+  },
+  zhipu: {
+    embeddingModel: "embedding-2",
+    embeddingDimensions: 1024,
+    chatModel: "GLM-4.5",
+    baseURL: "https://open.bigmodel.cn/api/paas/v4",
+  },
+  cohere: {
+    embeddingModel: "embed-english-v3.0",
+    embeddingDimensions: 1024,
+    chatModel: "command-r",
+  },
+};
+
+// ─── AI Constants (defaults, kept for backward compat) ─────────
 export const EMBEDDING_MODEL = "text-embedding-3-small";
 export const EMBEDDING_DIMENSIONS = 1536;
 export const CHAT_MODEL = "gpt-4o-mini";

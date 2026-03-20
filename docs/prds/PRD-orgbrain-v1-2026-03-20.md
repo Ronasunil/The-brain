@@ -154,26 +154,26 @@ Route → Controller/Handler → Service → Repository → Supabase (PostgreSQL
 
 ## 6. Files Changed
 
-| File | Status | Description |
-|---|---|---|
-| `src/config/env.ts` | Modified | Zod-validated env config |
-| `src/app.ts` | Modified | Express setup with mainRouter + error handler |
-| `src/server.ts` | Modified | Added EmbeddingWorker start/stop |
-| `src/db/message.repository.ts` | Modified | Added createBatch(), getUnembedded() |
-| `src/lib/types/message.types.ts` | Modified | Added CreateMessageInput fields |
-| `src/services/ai.service.ts` | Modified | Formatting changes |
-| `src/services/telegram.service.ts` | Modified | Formatting changes |
-| `package.json` | Modified | Added stream-json dependency |
-| `README.md` | Modified | Updated project README |
-| `src/services/import.service.ts` | **Created** | Streaming Telegram export importer |
-| `src/services/embedding.worker.ts` | **Created** | Background embedding worker |
-| `src/routes/import.route.ts` | **Created** | Import API endpoints |
-| `src/routes/main.route.ts` | **Created** | Central router |
-| `src/lib/constants/import.constants.ts` | **Created** | Import/worker constants |
-| `src/lib/validations/import.schema.ts` | **Created** | Import types & interfaces |
-| `src/error/app-error.ts` | **Created** | Refactored AppError class |
-| `src/error/custom-error.ts` | **Created** | Custom error base class |
-| `src/error/error.handler.ts` | **Created** | Global error handler + 404 handler |
+| File                                    | Status      | Description                                   |
+| --------------------------------------- | ----------- | --------------------------------------------- |
+| `src/config/env.ts`                     | Modified    | Zod-validated env config                      |
+| `src/app.ts`                            | Modified    | Express setup with mainRouter + error handler |
+| `src/server.ts`                         | Modified    | Added EmbeddingWorker start/stop              |
+| `src/db/message.repository.ts`          | Modified    | Added createBatch(), getUnembedded()          |
+| `src/lib/types/message.types.ts`        | Modified    | Added CreateMessageInput fields               |
+| `src/services/ai.service.ts`            | Modified    | Formatting changes                            |
+| `src/services/telegram.service.ts`      | Modified    | Formatting changes                            |
+| `package.json`                          | Modified    | Added stream-json dependency                  |
+| `README.md`                             | Modified    | Updated project README                        |
+| `src/services/import.service.ts`        | **Created** | Streaming Telegram export importer            |
+| `src/services/embedding.worker.ts`      | **Created** | Background embedding worker                   |
+| `src/routes/import.route.ts`            | **Created** | Import API endpoints                          |
+| `src/routes/main.route.ts`              | **Created** | Central router                                |
+| `src/lib/constants/import.constants.ts` | **Created** | Import/worker constants                       |
+| `src/lib/validations/import.schema.ts`  | **Created** | Import types & interfaces                     |
+| `src/error/app-error.ts`                | **Created** | Refactored AppError class                     |
+| `src/error/custom-error.ts`             | **Created** | Custom error base class                       |
+| `src/error/error.handler.ts`            | **Created** | Global error handler + 404 handler            |
 
 ---
 

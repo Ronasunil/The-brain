@@ -14,8 +14,11 @@ const envSchema = z.object({
   SUPABASE_ANON_KEY: z.string().min(1),
   SUPABASE_SERVICE_ROLE_KEY: z.string().min(1),
 
-  // OpenAI
-  OPENAI_API_KEY: z.string().min(1),
+  // AI Provider
+  AI_PROVIDER: z.enum(["openai", "zhipu", "cohere"]).default("cohere"),
+  OPENAI_API_KEY: z.string().optional(),
+  ZHIPU_API_KEY: z.string().optional(),
+  COHERE_API_KEY: z.string().min(1),
 
   // Telegram
   TELEGRAM_BOT_TOKEN: z.string().min(1),

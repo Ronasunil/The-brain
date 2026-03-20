@@ -79,7 +79,7 @@ RETURNS TABLE (
   chat_id TEXT,
   chat_name TEXT,
   content TEXT,
-  timestamp TIMESTAMPTZ,
+  "timestamp" TIMESTAMPTZ,
   created_at TIMESTAMPTZ,
   similarity FLOAT
 )
@@ -97,7 +97,7 @@ BEGIN
     m.chat_id,
     m.chat_name,
     m.content,
-    m.timestamp,
+    m."timestamp",
     m.created_at,
     1 - (m.embedding <=> query_embedding) AS similarity
   FROM messages m
