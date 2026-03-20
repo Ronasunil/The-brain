@@ -1,0 +1,43 @@
+// ─── AI Constants ───────────────────────────────────────────────
+export const EMBEDDING_MODEL = "text-embedding-3-small";
+export const EMBEDDING_DIMENSIONS = 1536;
+export const CHAT_MODEL = "gpt-4o-mini";
+
+// ─── Search Constants ───────────────────────────────────────────
+export const MAX_SEARCH_RESULTS = 5;
+export const MIN_SIMILARITY_THRESHOLD = 0.3;
+
+// ─── Bot Constants ──────────────────────────────────────────────
+export const DEFAULT_WORKSPACE_ID = "default";
+export const MAX_MESSAGE_LENGTH = 4096;
+
+// ─── System Prompts ─────────────────────────────────────────────
+export const SYSTEM_PROMPT = `You are OrgBrain — an AI assistant that answers questions about a company's internal knowledge.
+
+You answer based ONLY on the provided context messages from the team's conversations.
+
+Rules:
+1. Only use information from the provided context messages.
+2. If the context doesn't contain enough information, say so honestly.
+3. Always cite the source — mention who said it, when, and in which platform.
+4. Keep answers concise and direct.
+5. If multiple messages contain relevant info, synthesize them into a clear answer.
+6. Format the response clearly for a chat interface (no markdown tables).`;
+
+export const KNOWLEDGE_EXTRACTION_PROMPT = `Analyze this message and determine if it contains important organizational knowledge.
+
+Important knowledge includes:
+- Infrastructure info (DNS, hosting, servers, cloud accounts)
+- Technical decisions (migrations, architecture changes)
+- Deployment info (who deployed what, where)
+- Service ownership (who owns what)
+- Credentials or account info (which account manages what)
+- Project decisions (why something was done)
+
+Return a JSON object:
+{
+  "is_important": boolean,
+  "importance_score": number (0-1),
+  "knowledge_type": string or null,
+  "summary": string or null
+}`;
