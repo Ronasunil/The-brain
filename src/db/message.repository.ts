@@ -31,7 +31,10 @@ export const MessageRepository = {
     if (error) {
       // Duplicate message — return existing
       if (error.code === "23505") {
-        const existing = await this.findBySourceId(input.source, input.source_message_id);
+        const existing = await this.findBySourceId(
+          input.source,
+          input.source_message_id,
+        );
         if (existing) return existing;
       }
       throw new Error(`Failed to insert message: ${error.message}`);
@@ -43,7 +46,10 @@ export const MessageRepository = {
   /**
    * Find a message by source platform + original message ID.
    */
-  async findBySourceId(source: string, sourceMessageId: string): Promise<StoredMessage | null> {
+  async findBySourceId(
+    source: string,
+    sourceMessageId: string,
+  ): Promise<StoredMessage | null> {
     const supabase = getSupabaseClient();
 
     const { data, error } = await supabase
@@ -113,6 +119,63 @@ export const MessageRepository = {
       } as StoredMessage,
       similarity: row.similarity,
     }));
+  },
+
+  /**
+   * Batch insert messages (skips duplicates).
+   * Used for bulk imports — much faster than individual inserts.
+   */
+  async createBatch(inputs: CreateMessageInput[]): Promise<number> {
+    if (inputs.length === 0) return 0;
+
+    const supabase = getSupabaseClient();
+
+    const rows = inputs.map((input) => ({
+      workspace_id: input.workspace_id,
+      source: input.source,
+      source_message_id: input.source_message_id,
+      user_name: input.user_name,
+      user_id: input.user_id,
+      chat_id: input.chat_id,
+      chat_name: input.chat_name,
+      content: input.content,
+      timestamp: input.timestamp.toISOString(),
+    }));
+
+    const { data, error } = await supabase
+      .from("messages")
+      .upsert(rows, {
+        onConflict: "source,source_message_id",
+        ignoreDuplicates: true,
+      })
+      .select("id");
+
+    if (error) {
+      throw new Error(`Batch insert failed: ${error.message}`);
+    }
+
+    return data?.length || 0;
+  },
+
+  /**
+   * Get messages that don't have embeddings yet.
+   * Used by the background embedding worker.
+   */
+  async getUnembedded(limit: number = 50): Promise<StoredMessage[]> {
+    const supabase = getSupabaseClient();
+
+    const { data, error } = await supabase
+      .from("messages")
+      .select()
+      .is("embedding", null)
+      .order("timestamp", { ascending: true })
+      .limit(limit);
+
+    if (error) {
+      throw new Error(`Failed to fetch unembedded messages: ${error.message}`);
+    }
+
+    return (data || []) as StoredMessage[];
   },
 
   /**
