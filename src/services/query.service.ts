@@ -35,6 +35,8 @@ export const QueryService = {
     // 3. Generate AI answer from context
     const answer = await AIService.generateAnswer(question, searchResults);
 
+    console.log("Generated answer:", answer);
+
     // 4. Build response with sources
     return {
       answer,

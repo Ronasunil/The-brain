@@ -11,7 +11,7 @@ import {
  * Free tier (no credit card):
  *   - 1000 API calls/month
  *   - embed-english-v3.0 (1024 dimensions)
- *   - command-r (chat)
+ *   - command-r-plus (chat)
  *
  * Docs: https://docs.cohere.com
  */

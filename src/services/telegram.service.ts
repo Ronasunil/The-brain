@@ -159,7 +159,7 @@ export const TelegramBotService = {
     const result = await QueryService.ask(question, DEFAULT_WORKSPACE_ID);
 
     // Format the response
-    let response = `🧠 ${result.answer}`;
+    let response = `🧠 ${escapeMarkdown(result.answer)}`;
 
     if (result.sources.length > 0) {
       response += "\n\n📎 *Sources:*";
@@ -169,7 +169,7 @@ export const TelegramBotService = {
           month: "short",
           day: "numeric",
         });
-        response += `\n• _"${truncate(source.content, 80)}"_ — ${source.user_name} via ${source.source} (${date})`;
+        response += `\n• _"${escapeMarkdown(truncate(source.content, 80))}"_ — ${escapeMarkdown(source.user_name)} via ${source.source} (${date})`;
       }
     }
 
@@ -220,4 +220,12 @@ I capture your team's conversations and turn them into searchable knowledge.
 function truncate(text: string, maxLength: number): string {
   if (text.length <= maxLength) return text;
   return text.slice(0, maxLength) + "...";
+}
+
+/**
+ * Escape Telegram Markdown V1 special characters in dynamic text.
+ * Characters: _ * ` [
+ */
+function escapeMarkdown(text: string): string {
+  return text.replace(/[_*`\[]/g, "\\$&");
 }

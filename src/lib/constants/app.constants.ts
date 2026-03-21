@@ -19,7 +19,7 @@ export const AI_PROVIDER_CONFIGS: Record<
   cohere: {
     embeddingModel: "embed-english-v3.0",
     embeddingDimensions: 1024,
-    chatModel: "command-r",
+    chatModel: "command-a-03-2025",
   },
 };
 
