@@ -3,6 +3,8 @@ import {
   AIProvider,
   AIProviderConfig,
   ChatCompletionOptions,
+  RerankOptions,
+  RerankResult,
 } from "../lib/types/ai.types";
 
 /**
@@ -17,6 +19,7 @@ import {
  */
 export class ZhipuProvider implements AIProvider {
   readonly name = "zhipu";
+  readonly supportsRerank = false;
   private client: OpenAI;
   private config: AIProviderConfig;
 
@@ -55,5 +58,14 @@ export class ZhipuProvider implements AIProvider {
     return (
       response.choices[0]?.message?.content || "I couldn't generate an answer."
     );
+  }
+
+  async rerank(
+    _query: string,
+    documents: string[],
+    _options: RerankOptions = {},
+  ): Promise<RerankResult[]> {
+    // Zhipu doesn't support rerank — return original order
+    return documents.map((_, index) => ({ index, relevanceScore: 1 }));
   }
 }

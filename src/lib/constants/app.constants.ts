@@ -7,7 +7,7 @@ export const AI_PROVIDER_CONFIGS: Record<
 > = {
   openai: {
     embeddingModel: "text-embedding-3-small",
-    embeddingDimensions: 1536,
+    embeddingDimensions: 1024,
     chatModel: "gpt-4o-mini",
   },
   zhipu: {
@@ -31,6 +31,13 @@ export const CHAT_MODEL = "gpt-4o-mini";
 // ─── Search Constants ───────────────────────────────────────────
 export const MAX_SEARCH_RESULTS = 5;
 export const MIN_SIMILARITY_THRESHOLD = 0.3;
+// ─── Rerank Constants ───────────────────────────────────────
+export const RERANK_MODEL = "rerank-v3.5";
+export const RERANK_INITIAL_FETCH = 30;
+export const RERANK_TOP_N = 12;
+
+// ─── Hybrid Search Constants ────────────────────────────────
+export const FULLTEXT_SEARCH_LIMIT = 30;
 
 // ─── Bot Constants ──────────────────────────────────────────────
 export const DEFAULT_WORKSPACE_ID = "default";
@@ -40,6 +47,7 @@ export const MAX_MESSAGE_LENGTH = 4096;
 export const SYSTEM_PROMPT = `You are OrgBrain — an AI assistant that answers questions about a company's internal knowledge.
 
 You answer based ONLY on the provided context messages from the team's conversations.
+Messages are ordered chronologically (oldest first). Pay close attention to timestamps.
 
 Rules:
 1. Only use information from the provided context messages.
@@ -47,7 +55,9 @@ Rules:
 3. Always cite the source — mention who said it, when, and in which platform.
 4. Keep answers concise and direct.
 5. If multiple messages contain relevant info, synthesize them into a clear answer.
-6. Format the response clearly for a chat interface (no markdown tables).`;
+6. Format the response clearly for a chat interface (no markdown tables).
+7. When messages contradict each other on the same topic, ALWAYS trust the most recent message as the current state. The older message represents a previous state that has since changed.
+8. When reporting the current status of something, base your answer on the latest message about that topic and note how it changed over time if relevant.`;
 
 export const KNOWLEDGE_EXTRACTION_PROMPT = `Analyze this message and determine if it contains important organizational knowledge.
 

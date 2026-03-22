@@ -3,6 +3,8 @@ import {
   AIProvider,
   AIProviderConfig,
   ChatCompletionOptions,
+  RerankOptions,
+  RerankResult,
 } from "../lib/types/ai.types";
 
 /**
@@ -17,6 +19,7 @@ import {
  */
 export class CohereProvider implements AIProvider {
   readonly name = "cohere";
+  readonly supportsRerank = true;
   private client: CohereClient;
   private config: AIProviderConfig;
 
@@ -63,5 +66,23 @@ export class CohereProvider implements AIProvider {
     });
 
     return response.text || "I couldn't generate an answer.";
+  }
+
+  async rerank(
+    query: string,
+    documents: string[],
+    options: RerankOptions = {},
+  ): Promise<RerankResult[]> {
+    const response = await this.client.rerank({
+      model: options.model || "rerank-v3.5",
+      query,
+      documents,
+      topN: options.topN || documents.length,
+    });
+
+    return response.results.map((r) => ({
+      index: r.index,
+      relevanceScore: r.relevanceScore,
+    }));
   }
 }

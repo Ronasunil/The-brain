@@ -1,6 +1,7 @@
 import { getAIProvider } from "../providers";
 import { SYSTEM_PROMPT } from "../lib/constants/app.constants";
 import { SearchResult } from "../lib/types";
+import { RerankOptions, RerankResult } from "../lib/types/ai.types";
 
 /**
  * AI Service — provider-agnostic AI operations.
@@ -29,16 +30,26 @@ export const AIService = {
   ): Promise<string> {
     const provider = getAIProvider();
 
-    // Build context from search results
-    const contextMessages = searchResults
+    // Sort results chronologically (oldest → newest) so LLM reads as a timeline
+    const sorted = [...searchResults].sort(
+      (a, b) =>
+        new Date(a.message.timestamp).getTime() -
+        new Date(b.message.timestamp).getTime(),
+    );
+
+    // Build context with full datetime for temporal reasoning
+    const contextMessages = sorted
       .map((result, index) => {
         const msg = result.message;
-        const date = new Date(msg.timestamp).toLocaleDateString("en-US", {
+        const datetime = new Date(msg.timestamp).toLocaleString("en-US", {
           year: "numeric",
           month: "short",
           day: "numeric",
+          hour: "2-digit",
+          minute: "2-digit",
+          hour12: false,
         });
-        return `[${index + 1}] "${msg.content}" — ${msg.user_name} via ${msg.source} (${date})`;
+        return `[${index + 1}] [${datetime}] "${msg.content}" — ${msg.user_name} via ${msg.source}`;
       })
       .join("\n");
 
@@ -51,5 +62,26 @@ export const AIService = {
       temperature: 0.3,
       maxTokens: 500,
     });
+  },
+
+  /**
+   * Rerank search results by relevance to the query.
+   * Falls back to original order if the provider doesn't support reranking.
+   */
+  async rerank(
+    query: string,
+    documents: string[],
+    options?: RerankOptions,
+  ): Promise<RerankResult[]> {
+    const provider = getAIProvider();
+    return provider.rerank(query, documents, options);
+  },
+
+  /**
+   * Check if the current provider supports reranking.
+   */
+  supportsRerank(): boolean {
+    const provider = getAIProvider();
+    return provider.supportsRerank;
   },
 };

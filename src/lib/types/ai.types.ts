@@ -9,6 +9,9 @@ export interface AIProvider {
   /** Provider identifier */
   readonly name: string;
 
+  /** Whether this provider supports reranking */
+  readonly supportsRerank: boolean;
+
   /**
    * Generate an embedding vector for a text string.
    * Returns a number array matching the configured dimensions.
@@ -24,6 +27,17 @@ export interface AIProvider {
     userPrompt: string,
     options?: ChatCompletionOptions,
   ): Promise<string>;
+
+  /**
+   * Rerank documents by relevance to a query.
+   * Returns reordered indices with relevance scores.
+   * Only supported by Cohere — other providers return documents unchanged.
+   */
+  rerank(
+    query: string,
+    documents: string[],
+    options?: RerankOptions,
+  ): Promise<RerankResult[]>;
 }
 
 /**
@@ -32,6 +46,22 @@ export interface AIProvider {
 export interface ChatCompletionOptions {
   temperature?: number;
   maxTokens?: number;
+}
+
+/**
+ * Options for reranking.
+ */
+export interface RerankOptions {
+  topN?: number;
+  model?: string;
+}
+
+/**
+ * A single rerank result — maps back to the original document index.
+ */
+export interface RerankResult {
+  index: number;
+  relevanceScore: number;
 }
 
 /**

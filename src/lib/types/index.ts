@@ -12,5 +12,7 @@ export type {
   AIProviderConfig,
   AIProviderName,
   ChatCompletionOptions,
+  RerankOptions,
+  RerankResult,
 } from "./ai.types";
 export { AI_PROVIDERS } from "./ai.types";
