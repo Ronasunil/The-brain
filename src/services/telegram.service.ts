@@ -3,6 +3,10 @@ import { env } from "../config/env";
 import { MessageService } from "./message.service";
 import { QueryService } from "./query.service";
 import { DEFAULT_WORKSPACE_ID } from "../lib/constants/app.constants";
+import {
+  extractBrainQuery,
+  isBrainQuery,
+} from "../lib/telegram-query-triggers";
 import { CreateMessageInput } from "../lib/types";
 
 let bot: TelegramBot;
@@ -23,8 +27,8 @@ function getBot(): TelegramBot {
  * Telegram Bot Service — handles all Telegram interactions.
  *
  * Two modes:
- * 1. LISTEN — capture all group messages and store them
- * 2. QUERY — when someone mentions the bot, answer their question
+ * 1. LISTEN — capture messages and store them (index)
+ * 2. QUERY — in groups/supergroups/channels only `/ask` runs queries; private DMs also allow @trigger, /brain, /search
  */
 export const TelegramBotService = {
   /**
@@ -33,14 +37,17 @@ export const TelegramBotService = {
   start(): void {
     const telegramBot = getBot();
 
-    // Listen to all text messages
-    telegramBot.on("message", async (msg) => {
+    const route = async (msg: TelegramBot.Message) => {
       try {
         await this.handleMessage(msg);
       } catch (error) {
         console.error("Error handling Telegram message:", error);
       }
-    });
+    };
+
+    telegramBot.on("message", route);
+    // Broadcast channel updates arrive as channel_post, not message
+    telegramBot.on("channel_post", route);
 
     console.log("👂 OrgBrain is listening to Telegram messages...");
   },
@@ -56,9 +63,9 @@ export const TelegramBotService = {
     const text = msg.text.trim();
     if (text.length < 2) return;
 
-    const isQuery = this.isQuestion(text);
+    const isQuery = isBrainQuery(text, msg.chat.type);
 
-    // Always store the message (even questions — they're company knowledge too)
+    // Index-only unless a query trigger matches (group/supergroup/channel: `/ask` only)
     if (!isQuery) {
       await this.storeMessage(msg);
       return;
@@ -69,50 +76,14 @@ export const TelegramBotService = {
   },
 
   /**
-   * Detect if a message is a question for the brain.
-   * Triggers: @orgbrain, /ask, /brain
-   */
-  isQuestion(text: string): boolean {
-    const trigger = env.BOT_TRIGGER.toLowerCase();
-    const lowerText = text.toLowerCase();
-
-    return (
-      lowerText.startsWith(trigger) ||
-      lowerText.startsWith("/ask") ||
-      lowerText.startsWith("/brain") ||
-      lowerText.startsWith("/search")
-    );
-  },
-
-  /**
-   * Extract the actual question from the trigger message.
-   * e.g. "@orgbrain where is DNS managed" → "where is DNS managed"
-   */
-  extractQuestion(text: string): string {
-    const trigger = env.BOT_TRIGGER.toLowerCase();
-    let question = text;
-
-    // Remove trigger prefix
-    if (question.toLowerCase().startsWith(trigger)) {
-      question = question.slice(trigger.length);
-    } else if (
-      question.startsWith("/ask") ||
-      question.startsWith("/brain") ||
-      question.startsWith("/search")
-    ) {
-      question = question.replace(/^\/(ask|brain|search)\s*/i, "");
-    }
-
-    return question.trim();
-  },
-
-  /**
    * Store a regular message (ingestion).
    */
   async storeMessage(msg: TelegramBot.Message): Promise<void> {
     const userName =
       msg.from?.username ||
       [msg.from?.first_name, msg.from?.last_name].filter(Boolean).join(" ") ||
+      msg.sender_chat?.title ||
+      msg.chat.title ||
       "unknown";
 
     const input: CreateMessageInput = {
@@ -141,7 +112,7 @@ export const TelegramBotService = {
     const chatId = msg.chat.id;
 
     // Extract the actual question
-    const question = this.extractQuestion(rawText);
+    const question = extractBrainQuery(rawText);
 
     if (!question || question.length < 3) {
       await telegramBot.sendMessage(

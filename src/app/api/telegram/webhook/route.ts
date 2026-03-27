@@ -5,6 +5,10 @@ import { QueryService } from "@/services/query.service";
 import { DEFAULT_WORKSPACE_ID } from "@/lib/constants/app.constants";
 import { env } from "@/config/env";
 import { CreateMessageInput } from "@/lib/types";
+import {
+  extractBrainQuery,
+  isBrainQuery,
+} from "@/lib/telegram-query-triggers";
 
 const TELEGRAM_API = `https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}`;
 
@@ -17,7 +21,7 @@ const TELEGRAM_API = `https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}`;
 export async function POST(req: NextRequest) {
   try {
     const update = await req.json();
-    const msg = update?.message;
+    const msg = update?.message ?? update?.channel_post;
     if (!msg || !msg.text) {
       return success({ ok: true }, "No actionable message");
     }
@@ -27,7 +31,8 @@ export async function POST(req: NextRequest) {
       return success({ ok: true }, "Message too short");
     }
 
-    const isQuery = isQuestion(text);
+    const chatType = msg.chat?.type as string | undefined;
+    const isQuery = isBrainQuery(text, chatType);
 
     if (!isQuery) {
       // Store the message
@@ -36,6 +41,8 @@ export async function POST(req: NextRequest) {
         [msg.from?.first_name, msg.from?.last_name]
           .filter(Boolean)
           .join(" ") ||
+        msg.sender_chat?.title ||
+        msg.chat?.title ||
         "unknown";
 
       const input: CreateMessageInput = {
@@ -55,7 +62,7 @@ export async function POST(req: NextRequest) {
     }
 
     // It's a question — answer it
-    const question = extractQuestion(text);
+    const question = extractBrainQuery(text);
     if (!question || question.length < 3) {
       await sendTelegramMessage(
         msg.chat.id,
@@ -89,28 +96,6 @@ export async function POST(req: NextRequest) {
   } catch (error) {
     return handleError(error);
   }
-}
-
-function isQuestion(text: string): boolean {
-  const trigger = env.BOT_TRIGGER.toLowerCase();
-  const lower = text.toLowerCase();
-  return (
-    lower.startsWith(trigger) ||
-    lower.startsWith("/ask") ||
-    lower.startsWith("/brain") ||
-    lower.startsWith("/search")
-  );
-}
-
-function extractQuestion(text: string): string {
-  const trigger = env.BOT_TRIGGER.toLowerCase();
-  let q = text;
-  if (q.toLowerCase().startsWith(trigger)) {
-    q = q.slice(trigger.length);
-  } else if (/^\/(ask|brain|search)/i.test(q)) {
-    q = q.replace(/^\/(ask|brain|search)\s*/i, "");
-  }
-  return q.trim();
 }
 
 function truncate(text: string, max: number): string {
