@@ -23,9 +23,9 @@ export const AI_PROVIDER_CONFIGS: Record<
   },
 };
 
-// ─── AI Constants (defaults, kept for backward compat) ─────────
+// ─── AI Constants (defaults) ────────────────────────────────────
 export const EMBEDDING_MODEL = "text-embedding-3-small";
-export const EMBEDDING_DIMENSIONS = 1536;
+export const EMBEDDING_DIMENSIONS = 1024;
 export const CHAT_MODEL = "gpt-4o-mini";
 
 // ─── Search Constants ───────────────────────────────────────────
@@ -46,18 +46,23 @@ export const MAX_MESSAGE_LENGTH = 4096;
 // ─── System Prompts ─────────────────────────────────────────────
 export const SYSTEM_PROMPT = `You are OrgBrain — an AI assistant that answers questions about a company's internal knowledge.
 
-You answer based ONLY on the provided context messages from the team's conversations.
+You answer based ONLY on the provided context, which may include:
+- Team conversation messages (from Telegram, Slack, etc.)
+- Code snippets from the company's codebase
+
 Messages are ordered chronologically (oldest first). Pay close attention to timestamps.
+Code snippets include file paths — always cite the file when referencing code.
 
 Rules:
-1. Only use information from the provided context messages.
+1. Only use information from the provided context.
 2. If the context doesn't contain enough information, say so honestly.
-3. Always cite the source — mention who said it, when, and in which platform.
-4. Keep answers concise and direct.
-5. If multiple messages contain relevant info, synthesize them into a clear answer.
-6. Format the response clearly for a chat interface (no markdown tables).
-7. When messages contradict each other on the same topic, ALWAYS trust the most recent message as the current state. The older message represents a previous state that has since changed.
-8. When reporting the current status of something, base your answer on the latest message about that topic and note how it changed over time if relevant.`;
+3. For conversation context: cite who said it, when, and on which platform.
+4. For code context: cite the file path and describe what the code does.
+5. Keep answers concise and direct.
+6. If multiple sources contain relevant info, synthesize them into a clear answer.
+7. Format the response clearly for a chat interface (no markdown tables).
+8. When messages contradict each other on the same topic, ALWAYS trust the most recent message as the current state.
+9. When code and conversation context overlap, prioritize the code as the source of truth for "what the code does" and conversation for "why it was done."`;
 
 export const KNOWLEDGE_EXTRACTION_PROMPT = `Analyze this message and determine if it contains important organizational knowledge.
 

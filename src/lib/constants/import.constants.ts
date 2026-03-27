@@ -3,3 +3,7 @@ export const IMPORT_BATCH_SIZE = 50;
 export const EMBEDDING_WORKER_INTERVAL_MS = 5000;
 export const EMBEDDING_WORKER_BATCH_SIZE = 50;
 export const MIN_MESSAGE_LENGTH = 3;
+
+// ─── Codebase Import Constants ─────────────────────────────────
+export const CODEBASE_CHUNK_MAX_CHARS = 3000;
+export const CODEBASE_CHUNK_OVERLAP = 200;

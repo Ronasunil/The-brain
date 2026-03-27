@@ -164,12 +164,18 @@ export const TelegramBotService = {
     if (result.sources.length > 0) {
       response += "\n\n📎 *Sources:*";
       for (const source of result.sources) {
-        const date = new Date(source.timestamp).toLocaleDateString("en-US", {
-          year: "numeric",
-          month: "short",
-          day: "numeric",
-        });
-        response += `\n• _"${escapeMarkdown(truncate(source.content, 80))}"_ — ${escapeMarkdown(source.user_name)} via ${source.source} (${date})`;
+        if (source.file_path) {
+          // Code chunk citation
+          response += `\n• 📄 \`${source.file_path}\``;
+        } else {
+          // Conversation citation
+          const date = new Date(source.timestamp).toLocaleDateString("en-US", {
+            year: "numeric",
+            month: "short",
+            day: "numeric",
+          });
+          response += `\n• _"${escapeMarkdown(truncate(source.content, 80))}"_ — ${escapeMarkdown(source.user_name)} via ${source.source} (${date})`;
+        }
       }
     }
 

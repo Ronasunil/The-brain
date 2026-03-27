@@ -1,3 +1,5 @@
+import { StoredCodeChunk } from "./code.types";
+
 /**
  * Message source platforms.
  */
@@ -7,6 +9,7 @@ export const MESSAGE_SOURCES = [
   "github",
   "linear",
   "manual",
+  "code",
 ] as const;
 export type MessageSource = (typeof MESSAGE_SOURCES)[number];
 
@@ -52,6 +55,21 @@ export interface SearchResult {
 }
 
 /**
+ * A unified search result item — either a message or a code chunk.
+ */
+export type SearchResultItem =
+  | { kind: "message"; data: StoredMessage }
+  | { kind: "code"; data: StoredCodeChunk };
+
+/**
+ * Unified search result wrapping both messages and code chunks.
+ */
+export interface UnifiedSearchResult {
+  item: SearchResultItem;
+  similarity: number;
+}
+
+/**
  * AI-generated answer with sources.
  */
 export interface BrainAnswer {
@@ -59,8 +77,9 @@ export interface BrainAnswer {
   sources: Array<{
     content: string;
     user_name: string;
-    source: MessageSource;
+    source: string;
     timestamp: Date;
     similarity: number;
+    file_path?: string;
   }>;
 }

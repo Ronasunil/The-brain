@@ -91,8 +91,6 @@ export const MessageRepository = {
   ): Promise<SearchResult[]> {
     const supabase = getSupabaseClient();
 
-    console.log("hitted ehre");
-
     const { data, error } = await supabase.rpc("search_messages", {
       query_embedding: JSON.stringify(queryEmbedding),
       match_workspace_id: workspaceId,
@@ -100,7 +98,6 @@ export const MessageRepository = {
       similarity_threshold: threshold,
     });
 
-    console.log(data);
     if (error) {
       throw new Error(`Search failed: ${error.message}`);
     }

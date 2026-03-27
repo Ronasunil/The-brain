@@ -33,30 +33,12 @@ CREATE TABLE IF NOT EXISTS messages (
   chat_name TEXT NOT NULL DEFAULT '',
   content TEXT NOT NULL,
   timestamp TIMESTAMPTZ NOT NULL,
-  embedding VECTOR(1536),                  -- OpenAI text-embedding-3-small
-  search_vector TSVECTOR,                  -- Full-text search vector (auto-populated by trigger)
-  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-
-  -- Prevent duplicate messages from the same source
-  UNIQUE(source, source_message_id)CREATE TABLE IF NOT EXISTS messages (
-  id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::TEXT,
-  workspace_id TEXT NOT NULL REFERENCES workspaces(id),
-  source TEXT NOT NULL,                    -- telegram, slack, github, etc.
-  source_message_id TEXT NOT NULL,         -- original message ID from platform
-  user_name TEXT NOT NULL DEFAULT 'unknown',
-  user_id TEXT NOT NULL DEFAULT '',
-  chat_id TEXT NOT NULL DEFAULT '',
-  chat_name TEXT NOT NULL DEFAULT '',
-  content TEXT NOT NULL,
-  timestamp TIMESTAMPTZ NOT NULL,
-  embedding VECTOR(1536),                  -- OpenAI text-embedding-3-small
+  embedding VECTOR(1536),                  -- will be fixed to VECTOR(1024) in migration 002
   search_vector TSVECTOR,                  -- Full-text search vector (auto-populated by trigger)
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 
   -- Prevent duplicate messages from the same source
   UNIQUE(source, source_message_id)
-);
-
 );
 
 -- ─── Indexes ────────────────────────────────
