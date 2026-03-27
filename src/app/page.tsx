@@ -46,6 +46,22 @@ export default function HomePage() {
         >
           Import Codebase
         </Link>
+
+        <Link
+          href="/admin"
+          style={{
+            display: "block",
+            padding: "14px 18px",
+            background: "#fff",
+            color: "#111",
+            border: "1px solid #ddd",
+            borderRadius: 10,
+            textDecoration: "none",
+            fontWeight: 600,
+          }}
+        >
+          Admin analytics
+        </Link>
       </nav>
     </main>
   );
