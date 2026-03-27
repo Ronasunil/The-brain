@@ -21,8 +21,20 @@ interface CodebaseImportStatus {
   error: string | null;
 }
 
-// Track active import jobs (in-memory for V1)
-const importJobs = new Map<string, CodebaseImportStatus>();
+declare global {
+  // eslint-disable-next-line no-var
+  var __orgbrainCodebaseImportJobs:
+    | Map<string, CodebaseImportStatus>
+    | undefined;
+}
+
+// Track import jobs in global process state so dev HMR/recompile doesn't reset them.
+const importJobs =
+  globalThis.__orgbrainCodebaseImportJobs ??
+  (globalThis.__orgbrainCodebaseImportJobs = new Map<
+    string,
+    CodebaseImportStatus
+  >());
 
 /**
  * Codebase Import Service — indexes a local directory into code_chunks.

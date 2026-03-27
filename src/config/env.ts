@@ -1,7 +1,4 @@
-import dotenv from "dotenv";
 import { z } from "zod";
-
-dotenv.config();
 
 const envSchema = z.object({
   PORT: z.string().default("3000"),
@@ -29,12 +26,38 @@ const envSchema = z.object({
   BOT_TRIGGER: z.string().default("@orgbrain"),
 });
 
-const parsed = envSchema.safeParse(process.env);
+type Env = z.infer<typeof envSchema>;
 
-if (!parsed.success) {
-  console.error("❌ Invalid environment variables:");
-  console.error(parsed.error.flatten().fieldErrors);
-  process.exit(1);
+let cachedEnv: Env | null = null;
+
+function parseEnv(): Env {
+  const parsed = envSchema.safeParse(process.env);
+
+  if (!parsed.success) {
+    const fieldErrors = parsed.error.flatten().fieldErrors;
+    const details = Object.entries(fieldErrors)
+      .map(([key, value]) => `- ${key}: ${value?.join(", ") ?? "Invalid value"}`)
+      .join("\n");
+
+    throw new Error(
+      `Invalid environment variables.\n${details || "- Unknown validation error"}`,
+    );
+  }
+
+  return parsed.data;
 }
 
-export const env = parsed.data;
+export function getEnv(): Env {
+  if (!cachedEnv) {
+    cachedEnv = parseEnv();
+  }
+
+  return cachedEnv;
+}
+
+// Keep the old `env.X` access pattern while validating lazily on first use.
+export const env = new Proxy({} as Env, {
+  get(_target, prop: keyof Env) {
+    return getEnv()[prop];
+  },
+});

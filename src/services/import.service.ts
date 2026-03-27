@@ -14,8 +14,15 @@ import {
   MIN_MESSAGE_LENGTH,
 } from "../lib/constants/import.constants";
 
-// Track active import jobs (in-memory for V1)
-const importJobs = new Map<string, ImportStatus>();
+declare global {
+  // eslint-disable-next-line no-var
+  var __orgbrainTelegramImportJobs: Map<string, ImportStatus> | undefined;
+}
+
+// Track import jobs in global process state so dev HMR/recompile doesn't reset them.
+const importJobs =
+  globalThis.__orgbrainTelegramImportJobs ??
+  (globalThis.__orgbrainTelegramImportJobs = new Map<string, ImportStatus>());
 
 /**
  * Import Service — handles bulk importing messages from platform exports.

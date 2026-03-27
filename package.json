@@ -1,12 +1,12 @@
 {
   "name": "orgbrain",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "AI-powered organizational memory system — your company's brain",
-  "main": "dist/server.js",
+  "private": true,
   "scripts": {
-    "dev": "tsx watch src/server.ts",
-    "build": "tsc",
-    "start": "node dist/server.js",
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
     "db:migrate": "tsx src/db/migrate.ts"
   },
   "keywords": [
@@ -20,24 +20,20 @@
   "dependencies": {
     "@supabase/supabase-js": "^2.46.0",
     "cohere-ai": "^7.20.0",
-    "cors": "^2.8.5",
     "dotenv": "^16.4.5",
-    "express": "^4.21.0",
-    "helmet": "^8.0.0",
-    "http-status-codes": "^2.3.0",
-    "morgan": "^1.10.0",
+    "next": "^15.0.0",
     "node-telegram-bot-api": "^0.66.0",
     "openai": "^4.73.0",
-    "request": "^2.88.2",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
     "stream-json": "^1.9.1",
     "zod": "^3.23.8"
   },
   "devDependencies": {
-    "@types/cors": "^2.8.17",
-    "@types/express": "^5.0.0",
-    "@types/morgan": "^1.9.9",
     "@types/node": "^22.0.0",
     "@types/node-telegram-bot-api": "^0.64.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
     "@types/stream-json": "^1.7.8",
     "tsx": "^4.19.0",
     "typescript": "^5.6.0"
