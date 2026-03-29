@@ -27,6 +27,10 @@ const envSchema = z.object({
   // Bot
   BOT_USERNAME: z.string().default("orgbrain_bot"),
   BOT_TRIGGER: z.string().default("@orgbrain"),
+
+  // Auth
+  JWT_SECRET: z.string().min(32),
+  JWT_EXPIRES_IN: z.string().default("30d"),
 });
 
 const parsed = envSchema.safeParse(process.env);
