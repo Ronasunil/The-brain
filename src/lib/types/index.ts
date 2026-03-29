@@ -16,3 +16,10 @@ export type {
   RerankResult,
 } from "./ai.types";
 export { AI_PROVIDERS } from "./ai.types";
+export type {
+  AuthRecord,
+  UserRecord,
+  UserResponse,
+  JwtPayload,
+  AuthenticatedRequest,
+} from "./auth.types";
