@@ -42,6 +42,7 @@ export const FULLTEXT_SEARCH_LIMIT = 30;
 // ─── Bot Constants ──────────────────────────────────────────────
 export const DEFAULT_WORKSPACE_ID = "default";
 export const MAX_MESSAGE_LENGTH = 4096;
+export const MANUAL_RESERVED_SLOTS = 3;
 
 // ─── System Prompts ─────────────────────────────────────────────
 export const SYSTEM_PROMPT = `You are OrgBrain — an AI assistant that answers questions about a company's internal knowledge.

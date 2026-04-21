@@ -91,8 +91,6 @@ export const MessageRepository = {
   ): Promise<SearchResult[]> {
     const supabase = getSupabaseClient();
 
-    console.log("hitted ehre");
-
     const { data, error } = await supabase.rpc("search_messages", {
       query_embedding: JSON.stringify(queryEmbedding),
       match_workspace_id: workspaceId,
@@ -100,7 +98,6 @@ export const MessageRepository = {
       similarity_threshold: threshold,
     });
 
-    console.log(data);
     if (error) {
       throw new Error(`Search failed: ${error.message}`);
     }
@@ -175,7 +172,6 @@ export const MessageRepository = {
       .limit(limit);
 
     if (error) {
-      console.log(error);
       throw new Error(`Failed to fetch unembedded messages: ${error.message}`);
     }
 
@@ -195,6 +191,49 @@ export const MessageRepository = {
 
     if (error) return 0;
     return count || 0;
+  },
+
+  /**
+   * Semantic search restricted to source='manual' rows (remembered facts).
+   * Uses the search_messages_manual DB function which filters at the index level
+   * (idx_messages_source) — no client-side filtering.
+   */
+  async searchManual(
+    workspaceId: string,
+    queryEmbedding: number[],
+    limit: number,
+    threshold: number,
+  ): Promise<SearchResult[]> {
+    const supabase = getSupabaseClient();
+
+    const { data, error } = await supabase.rpc("search_messages_manual", {
+      query_embedding: JSON.stringify(queryEmbedding),
+      match_workspace_id: workspaceId,
+      match_count: limit,
+      similarity_threshold: threshold,
+    });
+
+    if (error) {
+      throw new Error(`Manual search failed: ${error.message}`);
+    }
+
+    return (data || []).map((row: any) => ({
+      message: {
+        id: row.id,
+        workspace_id: row.workspace_id,
+        source: row.source,
+        source_message_id: row.source_message_id,
+        user_name: row.user_name,
+        user_id: row.user_id,
+        chat_id: row.chat_id,
+        chat_name: row.chat_name,
+        content: row.content,
+        timestamp: new Date(row.timestamp),
+        embedding: null,
+        created_at: new Date(row.created_at),
+      } as StoredMessage,
+      similarity: row.similarity,
+    }));
   },
 
   /**

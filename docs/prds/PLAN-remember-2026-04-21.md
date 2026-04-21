@@ -12,7 +12,9 @@ Add a single authenticated write endpoint — `POST /api/v1/brain/remember` — 
 
 Retrieval is *not* a new surface: because the row lives in the same `messages` table that `/brain/ask` already queries (hybrid semantic + full-text search over all messages in a workspace), the remembered fact is immediately discoverable through `/brain/ask` once embedded.
 
-**Scope is deliberately minimal**: no new table, no migration, no new dependency, no new service layer. One endpoint, ~50 lines of additive code across four existing files.
+However, remembered facts must be treated as **authoritative ground truth** — a high-volume Slack/Telegram import should never crowd them out. Two complementary mechanisms enforce this priority without a schema change: (1) reserved slots that guarantee relevant `source='manual'` rows always appear in the retrieval context, and (2) a prompt-level instruction that tells the AI to prefer manual facts over other sources when they conflict.
+
+**Scope is deliberately minimal**: no new table, no migration, no new dependency, no new service layer. One endpoint + two small additive edits to `QueryService`, ~70 lines of additive code across five existing files.
 
 ## 2. Acceptance Criteria
 
@@ -23,8 +25,10 @@ Retrieval is *not* a new surface: because the row lives in the same `messages` t
 - [ ] A successful call writes a row to `messages` with `source='manual'`, `source_message_id='remember:<uuid>'`, `user_id=<authed user id>`, `user_name=<authed user name>`, `chat_id='remember:<user id>'`, `chat_name='Remembered notes'`, `content=<text>`, `timestamp=<now>`, and the caller-supplied (or default) `workspace_id`
 - [ ] After the request completes, the row is embedded — either inline (logged as `✅ Embedded message …`) or by the next `EmbeddingWorker` sweep
 - [ ] A subsequent `POST /api/v1/brain/ask` with a relevant question surfaces the remembered text in `data.sources` with `source="manual"` and the correct `user_name`
+- [ ] When both a `source='manual'` row and a Telegram/Slack row are relevant to the same question, the manual row appears in the answer and is not crowded out by high-volume imports
+- [ ] The AI answer explicitly references the manually remembered fact when it directly answers the question (verified manually)
 - [ ] TypeScript compiles with zero new errors
-- [ ] No changes to `/brain/ask`, `/auth/*`, `/import/*`, `/health` behavior
+- [ ] No changes to `/auth/*`, `/import/*`, `/health` behavior
 - [ ] No database migration, no new package dependency
 
 ## 3. Current Codebase Analysis
@@ -75,14 +79,15 @@ src/
 | --- | --- | --- |
 | `src/routes/brain.route.ts` | Currently defines `POST /ask` inline | Add `POST /remember` handler alongside `/ask` in the same file |
 | `src/services/message.service.ts` | `MessageService.ingest(input)`: store → embed → log-on-fail | Called by the new handler — zero changes |
-| `src/db/message.repository.ts` | `messages` table CRUD; `create` is idempotent on `(source, source_message_id)` | Used transitively via `MessageService.ingest` |
+| `src/services/query.service.ts` | `QueryService.ask` — hybrid search → rerank → AI answer | Add `manual`-priority logic: reserved-slot pre-fetch + prompt instruction |
+| `src/db/message.repository.ts` | `messages` table CRUD; `create` is idempotent on `(source, source_message_id)` | Add `searchManual(workspaceId, embedding, limit)` query |
 | `src/services/embedding.worker.ts` | Runs on interval, re-embeds rows with `embedding IS NULL` | Safety net if inline embedding fails; zero changes |
 | `src/lib/validations/brain.schema.ts` | Currently holds `askQuestionSchema` | Add `rememberSchema` + `RememberPayload` type |
 | `src/lib/middleware/auth.middleware.ts` | `authenticate` — JWT cookie → `req.user: UserResponse` | Chained on the new route |
 | `src/lib/middleware/index.ts` | Middleware barrel | Already exports `authenticate` — no change |
 | `src/lib/middleware/validate-body.ts` | `validateBody(schema)` — puts parsed body on `(req as any).validatedBody`, throws `AppError(400)` | Chained on the new route |
 | `src/lib/errors/error-handler.ts` | `withErrorHandler` — catches thrown `AppError`/unknown errors | Wraps the new handler |
-| `src/lib/constants/app.constants.ts` | `DEFAULT_WORKSPACE_ID = "default"`, `MAX_MESSAGE_LENGTH = 4096` | Imported by schema + route |
+| `src/lib/constants/app.constants.ts` | `DEFAULT_WORKSPACE_ID = "default"`, `MAX_MESSAGE_LENGTH = 4096` | Add `MANUAL_RESERVED_SLOTS = 3` |
 | `src/lib/types/message.types.ts` | `MESSAGE_SOURCES` already includes `"manual"`; defines `StoredMessage`, `CreateMessageInput` | Add `RememberedItem` response type |
 | `src/lib/types/index.ts` | Types barrel | Re-export `RememberedItem` |
 | `src/lib/types/auth.types.ts` | `AuthenticatedRequest`, `UserResponse` | Imported by the new handler |
@@ -98,7 +103,10 @@ src/
 | `src/lib/validations/brain.schema.ts` | 🟢 Low | Adding a sibling Zod schema | New `rememberSchema` is independent of `askQuestionSchema` |
 | `src/lib/types/message.types.ts` | 🟢 Low | Adding an additional exported interface | No changes to existing types |
 | `src/lib/types/index.ts` | 🟢 Low | One re-export line | No cascading effects |
-| `/brain/ask` behavior | ✅ No Impact | The query service already searches all messages in the workspace, including `source='manual'` rows | N/A — new remembered rows simply become additional candidates |
+| `src/services/query.service.ts` | 🟡 Medium | `ask` method gains a pre-fetch step and a modified prompt; `mergeResults` signature unchanged | Manual rows are inserted at the front of `finalResults` before general results — existing path runs only when no manual rows match |
+| `src/db/message.repository.ts` | 🟢 Low | New read-only method alongside existing ones | No change to existing methods |
+| `src/lib/constants/app.constants.ts` | 🟢 Low | One new constant | No change to existing constants |
+| `/brain/ask` behavior | 🟡 Intentionally changed | `source='manual'` rows now get reserved slots and a prompt-authority hint | Answers that previously ignored a remembered fact will now cite it — the desired new behavior |
 | `MessageService.ingest` | ✅ No Impact | Consumed as-is | N/A |
 | Auth flow | ✅ No Impact | `authenticate` middleware consumed as-is | N/A |
 | `messages` schema / DB | ✅ No Impact | Reuses existing columns and the `"manual"` enum value | No migration |
@@ -127,6 +135,9 @@ src/
 | `validateBody` | `/ask`, `/auth/*`, `/import/*`, new `/remember` | No — consumed only |
 | `DEFAULT_WORKSPACE_ID` | `/ask`, new `/remember` | No — consumed only |
 | `MAX_MESSAGE_LENGTH` | (previously unused in validation) new `rememberSchema` | No — consumed only |
+| `QueryService.ask` | `/brain/ask` route | **Yes** — gains manual pre-fetch + prompt authority logic; existing callers unaffected (same signature) |
+| `AIService.generateAnswer` | `QueryService.ask` | **Yes** — optional `groundTruthFacts` parameter added; existing call sites pass nothing and get current behavior |
+| `MessageRepository` | `MessageService`, `QueryService` | **Yes** — new `searchManual` method added; existing methods unchanged |
 
 ### Design decisions
 
@@ -145,6 +156,9 @@ src/
 | HTTP status | `201 Created` | A resource was created. Matches `AuthController.signup`. |
 | Idempotency | None (each call creates a row) | A user saying the same fact twice is two legitimate events. Content-hash dedupe adds schema + surprise behavior for no v1 benefit. |
 | Embedding strategy | Delegate to `MessageService.ingest` | Inline attempt, log-and-continue on failure, background worker as safety net — all already built. |
+| **Priority mechanism** | **Reserved slots + prompt authority** | Pure similarity scoring lets high-volume Telegram/Slack imports crowd out manually remembered facts. Two layers fix this without a schema change: (1) always fetch up to `MANUAL_RESERVED_SLOTS` (3) relevant `source='manual'` rows first and prepend them to `finalResults`; (2) pass them to the AI in a dedicated "Ground-truth facts" block with a system instruction to prefer them. Score-boosting (multiplying similarity) was rejected because the boost magnitude is a magic number that interacts badly with reranking. |
+| `MANUAL_RESERVED_SLOTS` value | `3` | Enough headroom for the most common fact-heavy queries without pushing too many general sources out of context. Adjustable constant — no code change needed to tune it. |
+| Manual pre-fetch similarity threshold | Same `MIN_SIMILARITY_THRESHOLD` as general search | Avoids surfacing completely unrelated manual facts just because they exist; if none clear the threshold the general path runs unmodified. |
 
 ## 5. Implementation Plan
 
@@ -246,15 +260,89 @@ src/
   ```
 - **Middleware ordering rationale:** `authenticate` runs before `validateBody`. An anonymous caller with a bad body therefore gets a `401` without learning the body schema; a validated caller then gets a proper `400` on bad input. Same convention as `GET /auth/me`.
 
-### Step 5: Typecheck
+### Step 5: Add `MANUAL_RESERVED_SLOTS` constant
+
+- **What:** Add a single exported constant so the value is tunable without touching logic.
+- **Files:** `src/lib/constants/app.constants.ts` (modify; +1 line)
+- **Dependencies:** None
+- **Estimated complexity:** Low
+- **Details:**
+  ```ts
+  export const MANUAL_RESERVED_SLOTS = 3;
+  ```
+
+### Step 6: Add `searchManual` to `MessageRepository`
+
+- **What:** A dedicated read method that returns `source='manual'` rows ordered by cosine similarity, capped at `MANUAL_RESERVED_SLOTS`.
+- **Files:** `src/db/message.repository.ts` (modify; ~+15 lines)
+- **Dependencies:** Step 5
+- **Estimated complexity:** Low
+- **Details:**
+  ```ts
+  async searchManual(
+    workspaceId: string,
+    embedding: number[],
+    limit: number,
+    threshold: number,
+  ): Promise<SearchResult[]> {
+    // Same vector search as searchSimilar but filtered to source='manual'
+    // Implementation mirrors the existing searchSimilar RPC call with an added
+    // source filter — exact query depends on whether searchSimilar uses a
+    // Supabase RPC or inline SQL; match whichever pattern is already there.
+  }
+  ```
+
+### Step 7: Update `QueryService.ask` for priority retrieval
+
+- **What:** Before the general hybrid search, fetch up to `MANUAL_RESERVED_SLOTS` matching `source='manual'` rows. Prepend them to `finalResults` and pass them to the AI in a dedicated context block marked as authoritative ground truth.
+- **Files:** `src/services/query.service.ts` (modify; ~+25 lines)
+- **Dependencies:** Steps 5, 6
+- **Estimated complexity:** Medium
+- **Details:**
+  ```ts
+  async ask(question: string, workspaceId: string): Promise<BrainAnswer> {
+    const queryEmbedding = await AIService.createEmbedding(question);
+
+    // Pre-fetch authoritative manual facts (reserved slots)
+    const manualResults = await MessageRepository.searchManual(
+      workspaceId,
+      queryEmbedding,
+      MANUAL_RESERVED_SLOTS,
+      MIN_SIMILARITY_THRESHOLD,
+    );
+
+    // General hybrid search (existing path, unchanged)
+    const fetchCount = useRerank ? RERANK_INITIAL_FETCH : MAX_SEARCH_RESULTS;
+    const [cosineResults, fulltextResults] = await Promise.all([...]);
+    const merged = this.mergeResults(cosineResults, fulltextResults);
+
+    // Rerank general results (existing path)
+    let generalResults: SearchResult[] = ...;
+
+    // Merge: manual slots first, then general (dedup by id)
+    const manualIds = new Set(manualResults.map((r) => r.message.id));
+    const dedupedGeneral = generalResults.filter((r) => !manualIds.has(r.message.id));
+    const finalResults = [
+      ...manualResults,
+      ...dedupedGeneral.slice(0, MAX_SEARCH_RESULTS - manualResults.length),
+    ];
+
+    // Pass manual facts as authoritative block to AI
+    const answer = await AIService.generateAnswer(question, finalResults, manualResults);
+    ...
+  }
+  ```
+  `AIService.generateAnswer` gains an optional `groundTruthFacts` parameter. When provided, they are injected into the system prompt as a "Ground-truth facts (always prefer these)" section before the general context. The exact prompt wording is determined during implementation — the key invariant is that the AI instruction must appear in the **system** role, not the user role, so it cannot be overridden by user input.
+
+### Step 8: Typecheck
 
 - **What:** Run the TypeScript compiler to catch any import / type issues.
 - **Files:** none
-- **Dependencies:** Steps 1–4
+- **Dependencies:** Steps 1–7
 - **Estimated complexity:** Low
 - **Command:** `npm run build` (or `npx tsc --noEmit`)
 
-### Step 6: Manual end-to-end verification
+### Step 9: Manual end-to-end verification
 
 See Section 6.
 
@@ -326,4 +414,6 @@ limit 5;
 
 ## Summary
 
-Four additive edits to existing files (`brain.schema.ts`, `message.types.ts`, `types/index.ts`, `brain.route.ts`). No new packages, no migrations, no new services. Total code delta ≈ 50 lines. The endpoint reuses the existing, tested ingestion pipeline, so remembered text is automatically embedded and immediately retrievable through `/brain/ask`.
+Six additive edits to existing files (`brain.schema.ts`, `message.types.ts`, `types/index.ts`, `brain.route.ts`, `app.constants.ts`, `message.repository.ts`) plus two small modifications (`query.service.ts`, `ai.service.ts`). No new packages, no migrations, no new services. Total code delta ≈ 70 lines.
+
+The endpoint reuses the existing ingestion pipeline for writes. For reads, two complementary priority mechanisms ensure remembered facts are never drowned out by high-volume imports: reserved slots guarantee relevant `source='manual'` rows always appear in retrieval context, and a prompt-level authority instruction tells the AI to prefer them over general sources when they conflict.

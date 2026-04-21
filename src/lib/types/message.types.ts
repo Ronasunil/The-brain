@@ -44,6 +44,16 @@ export interface CreateMessageInput {
 }
 
 /**
+ * Curated response shape for POST /brain/remember.
+ */
+export interface RememberedItem {
+  id: string;
+  content: string;
+  timestamp: Date;
+  created_at: Date;
+}
+
+/**
  * Search result with similarity score.
  */
 export interface SearchResult {
