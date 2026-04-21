@@ -114,9 +114,7 @@ export const AuthService = {
 
   async forgotPassword(payload: ForgotPasswordPayload): Promise<void> {
     const auth = await AuthRepository.findByEmail(payload.email);
-    if (!auth) {
-      throw new AppError("User not found", 404);
-    }
+    if (!auth) return;
 
     // Generate 6-digit OTP
     const otp = crypto.randomInt(100000, 999999).toString();

@@ -1,33 +1,42 @@
-import { Request, Response } from "express";
-import httpStatusCodes from "http-status-codes"
-import { AppError } from "./app-error";
+import { NextFunction, Request, Response } from "express";
+import httpStatusCodes from "http-status-codes";
+import { AppError } from "../lib/errors/app-error";
 
+const handleInvalidRoutes = function (req: Request, res: Response): void {
+  const msg = `Route you requested does not exist: ${req.method} ${req.originalUrl}`;
+  res.status(httpStatusCodes.NOT_FOUND).json({
+    status: httpStatusCodes.NOT_FOUND,
+    data: null,
+    message: msg,
+  });
+};
 
+const globalErrorHandler = function (
+  err: Error,
+  _req: Request,
+  res: Response,
+  _next: NextFunction,
+): void {
+  if (err instanceof SyntaxError && "body" in err) {
+    res.status(400).json({ status: 400, data: null, message: "Invalid request body" });
+    return;
+  }
 
-const handleInvalidRoutes = async function(req:Request, res:Response) {
+  if (err instanceof AppError) {
+    res.status(err.statusCode).json({
+      status: err.statusCode,
+      data: null,
+      message: err.message,
+    });
+    return;
+  }
 
-    const msg = `Route you requested does not exist: ${req.method} ${req.originalUrl}`
-    const error = new AppError(msg, httpStatusCodes.NOT_FOUND).formatErrors()
-    res.status(error[0].statusCode).json(error)
-}
+  console.error("Unhandled error:", err);
+  res.status(httpStatusCodes.INTERNAL_SERVER_ERROR).json({
+    status: httpStatusCodes.INTERNAL_SERVER_ERROR,
+    data: null,
+    message: "Internal Server Error",
+  });
+};
 
-
-const globalErrorHandler = async function(err:Error, _req:Request, res:Response) {
-
-
-    if (err instanceof AppError) {
-        const error = err.formatErrors()
-        res.status(error[0].statusCode).json(error)
-    } else {
-        console.error("Unhandled error:", err)
-        res.status(httpStatusCodes.INTERNAL_SERVER_ERROR).json({
-            status: httpStatusCodes.INTERNAL_SERVER_ERROR,
-            data: null,
-            message: "Internal Server Error"
-        })
-    }
-}
-
-export { globalErrorHandler, handleInvalidRoutes }
-
-
+export { globalErrorHandler, handleInvalidRoutes };
