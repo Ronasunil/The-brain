@@ -8,35 +8,28 @@ import {
   TelegramExportMessage,
   ImportStatus,
 } from "../lib/validations/import.schema";
-import { DEFAULT_WORKSPACE_ID } from "../lib/constants/app.constants";
 import {
   IMPORT_BATCH_SIZE,
   MIN_MESSAGE_LENGTH,
 } from "../lib/constants/import.constants";
 
-// Track active import jobs (in-memory for V1)
 const importJobs = new Map<string, ImportStatus>();
 
+interface ImportParams {
+  filePath: string;
+  chatId: string;
+  chatName: string;
+  workspaceId: string;
+  integrationId: string;
+}
+
 /**
- * Import Service — handles bulk importing messages from platform exports.
- *
- * Flow:
- * 1. Stream-parse the JSON file (no full load into memory)
- * 2. Batch messages into groups of IMPORT_BATCH_SIZE
- * 3. Bulk INSERT each batch (skip duplicates)
- * 4. Embeddings are handled separately by EmbeddingWorker
+ * Import Service — bulk-imports messages from platform exports.
+ * Every batch row carries workspace_id + integration_id so the data is
+ * correctly scoped to the caller's workspace/integration.
  */
 export const ImportService = {
-  /**
-   * Import a Telegram Desktop export JSON file.
-   * Streams the file so it works with large exports (100K+ messages).
-   */
-  async importTelegramExport(
-    filePath: string,
-    chatId: string,
-    chatName: string,
-    workspaceId: string = DEFAULT_WORKSPACE_ID,
-  ): Promise<string> {
+  async importTelegramExport(params: ImportParams): Promise<string> {
     const jobId = `import_${Date.now()}`;
 
     const status: ImportStatus = {
@@ -52,8 +45,7 @@ export const ImportService = {
 
     importJobs.set(jobId, status);
 
-    // Process in background (don't await  return job ID immediately)
-    this.processFile(filePath, chatId, chatName, workspaceId, status)
+    this.processFile(params, status)
       .then(() => {
         status.status = "completed";
         status.completed_at = new Date();
@@ -71,16 +63,9 @@ export const ImportService = {
     return jobId;
   },
 
-  /**
-   * Stream-parse and batch-insert messages from a Telegram export file.
-   */
-  async processFile(
-    filePath: string,
-    chatId: string,
-    chatName: string,
-    workspaceId: string,
-    status: ImportStatus,
-  ): Promise<void> {
+  async processFile(params: ImportParams, status: ImportStatus): Promise<void> {
+    const { filePath, chatId, chatName, workspaceId, integrationId } = params;
+
     return new Promise((resolve, reject) => {
       let batch: CreateMessageInput[] = [];
 
@@ -93,7 +78,6 @@ export const ImportService = {
       pipeline.on(
         "data",
         async ({ value }: { value: TelegramExportMessage }) => {
-          // Only process text messages
           if (value.type !== "message") return;
 
           const text = this.extractText(value);
@@ -106,6 +90,7 @@ export const ImportService = {
 
           const input: CreateMessageInput = {
             workspace_id: workspaceId,
+            integration_id: integrationId,
             source: "telegram",
             source_message_id: `import_${value.id}`,
             user_name: value.from || "unknown",
@@ -118,7 +103,6 @@ export const ImportService = {
 
           batch.push(input);
 
-          // Flush batch when full
           if (batch.length >= IMPORT_BATCH_SIZE) {
             pipeline.pause();
             try {
@@ -134,7 +118,6 @@ export const ImportService = {
       );
 
       pipeline.on("end", async () => {
-        // Flush remaining batch
         if (batch.length > 0) {
           try {
             const stored = await MessageRepository.createBatch(batch);
@@ -152,10 +135,6 @@ export const ImportService = {
     });
   },
 
-  /**
-   * Extract plain text from Telegram's text field.
-   * Text can be a string or array of text entities.
-   */
   extractText(message: TelegramExportMessage): string {
     if (typeof message.text === "string") {
       return message.text.trim();
@@ -172,9 +151,6 @@ export const ImportService = {
     return "";
   },
 
-  /**
-   * Get the status of an import job.
-   */
   getStatus(jobId: string): ImportStatus | null {
     return importJobs.get(jobId) || null;
   },

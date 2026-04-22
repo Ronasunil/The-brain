@@ -2,55 +2,50 @@ import TelegramBot from "node-telegram-bot-api";
 import { env } from "../config/env";
 import { MessageService } from "./message.service";
 import { QueryService } from "./query.service";
-import { DEFAULT_WORKSPACE_ID } from "../lib/constants/app.constants";
+import { IntegrationService } from "./integration.service";
 import { CreateMessageInput } from "../lib/types";
+import { Integration } from "../lib/types/integration.types";
+import { TelegramUpdate } from "../lib/validations/telegram.schema";
 
-let bot: TelegramBot;
+const botCache = new Map<string, TelegramBot>();
 
 /**
- * Get or create the Telegram bot instance.
- * Uses polling mode for V1 (simpler than webhooks for dev).
+ * Construct (or retrieve cached) TelegramBot for the given integration.
+ * Decrypts the bot token on first use and keeps the instance for outbound calls.
  */
-function getBot(): TelegramBot {
-  if (!bot) {
-    bot = new TelegramBot(env.TELEGRAM_BOT_TOKEN, { polling: true });
-    console.log("🤖 Telegram bot started (polling mode)");
-  }
+function getBotForIntegration(integration: Integration): TelegramBot {
+  const existing = botCache.get(integration.id);
+  if (existing) return existing;
+
+  const token = IntegrationService.getDecryptedToken(integration);
+  const bot = new TelegramBot(token);
+  botCache.set(integration.id, bot);
   return bot;
 }
 
-/**
- * Telegram Bot Service — handles all Telegram interactions.
- *
- * Two modes:
- * 1. LISTEN — capture all group messages and store them
- * 2. QUERY — when someone mentions the bot, answer their question
- */
+export function evictBotCache(integrationId: string): void {
+  botCache.delete(integrationId);
+}
+
 export const TelegramBotService = {
   /**
-   * Initialize the bot and start listening.
+   * Dispatch a Telegram webhook payload into the message-handling pipeline.
+   * Returns immediately (setImmediate) so the HTTP caller can respond 200.
    */
-  start(): void {
-    const telegramBot = getBot();
-
-    // Listen to all text messages
-    telegramBot.on("message", async (msg) => {
-      try {
-        await this.handleMessage(msg);
-      } catch (error) {
+  processUpdate(integration: Integration, update: TelegramUpdate): void {
+    if (!update.message) return;
+    const msg = update.message as TelegramBot.Message;
+    setImmediate(() => {
+      this.handleMessage(integration, msg).catch((error) => {
         console.error("Error handling Telegram message:", error);
-      }
+      });
     });
-
-    console.log("👂 OrgBrain is listening to Telegram messages...");
   },
 
-  /**
-   * Handle an incoming Telegram message.
-   * Decides whether to store it, answer a question, or both.
-   */
-  async handleMessage(msg: TelegramBot.Message): Promise<void> {
-    // Skip non-text messages
+  async handleMessage(
+    integration: Integration,
+    msg: TelegramBot.Message,
+  ): Promise<void> {
     if (!msg.text) return;
 
     const text = msg.text.trim();
@@ -58,20 +53,14 @@ export const TelegramBotService = {
 
     const isQuery = this.isQuestion(text);
 
-    // Always store the message (even questions — they're company knowledge too)
     if (!isQuery) {
-      await this.storeMessage(msg);
+      await this.storeMessage(integration, msg);
       return;
     }
 
-    // It's a question — answer it
-    await this.answerQuestion(msg, text);
+    await this.answerQuestion(integration, msg, text);
   },
 
-  /**
-   * Detect if a message is a question for the brain.
-   * Triggers: @orgbrain, /ask, /brain
-   */
   isQuestion(text: string): boolean {
     const trigger = env.BOT_TRIGGER.toLowerCase();
     const lowerText = text.toLowerCase();
@@ -84,15 +73,10 @@ export const TelegramBotService = {
     );
   },
 
-  /**
-   * Extract the actual question from the trigger message.
-   * e.g. "@orgbrain where is DNS managed" → "where is DNS managed"
-   */
   extractQuestion(text: string): string {
     const trigger = env.BOT_TRIGGER.toLowerCase();
     let question = text;
 
-    // Remove trigger prefix
     if (question.toLowerCase().startsWith(trigger)) {
       question = question.slice(trigger.length);
     } else if (
@@ -106,17 +90,18 @@ export const TelegramBotService = {
     return question.trim();
   },
 
-  /**
-   * Store a regular message (ingestion).
-   */
-  async storeMessage(msg: TelegramBot.Message): Promise<void> {
+  async storeMessage(
+    integration: Integration,
+    msg: TelegramBot.Message,
+  ): Promise<void> {
     const userName =
       msg.from?.username ||
       [msg.from?.first_name, msg.from?.last_name].filter(Boolean).join(" ") ||
       "unknown";
 
     const input: CreateMessageInput = {
-      workspace_id: DEFAULT_WORKSPACE_ID,
+      workspace_id: integration.workspace_id,
+      integration_id: integration.id,
       source: "telegram",
       source_message_id: String(msg.message_id),
       user_name: userName,
@@ -130,17 +115,14 @@ export const TelegramBotService = {
     await MessageService.ingest(input);
   },
 
-  /**
-   * Answer a question using the brain.
-   */
   async answerQuestion(
+    integration: Integration,
     msg: TelegramBot.Message,
     rawText: string,
   ): Promise<void> {
-    const telegramBot = getBot();
+    const telegramBot = getBotForIntegration(integration);
     const chatId = msg.chat.id;
 
-    // Extract the actual question
     const question = this.extractQuestion(rawText);
 
     if (!question || question.length < 3) {
@@ -152,13 +134,10 @@ export const TelegramBotService = {
       return;
     }
 
-    // Send "thinking" indicator
     await telegramBot.sendChatAction(chatId, "typing");
 
-    // Query the brain
-    const result = await QueryService.ask(question, DEFAULT_WORKSPACE_ID);
+    const result = await QueryService.ask(question, integration.workspace_id);
 
-    // Format the response
     let response = `🧠 ${escapeMarkdown(result.answer)}`;
 
     if (result.sources.length > 0) {
@@ -179,12 +158,9 @@ export const TelegramBotService = {
     });
   },
 
-  /**
-   * Handle /start command — bot introduction.
-   */
-  async sendWelcome(chatId: number): Promise<void> {
-    const telegramBot = getBot();
-    const count = await MessageService.getCount(DEFAULT_WORKSPACE_ID);
+  async sendWelcome(integration: Integration, chatId: number): Promise<void> {
+    const telegramBot = getBotForIntegration(integration);
+    const count = await MessageService.getCount(integration.workspace_id);
 
     const welcome = `🧠 *OrgBrain — Your Team's Memory*
 
@@ -192,40 +168,23 @@ I capture your team's conversations and turn them into searchable knowledge.
 
 *How to use:*
 • Just talk normally — I'll remember everything
-• Ask me questions with \`@orgbrain\` or \`/ask\`
+• Ask me questions with \`${env.BOT_TRIGGER}\` or \`/ask\`
 
 *Example:*
-\`@orgbrain where is example.com DNS managed?\`
+\`${env.BOT_TRIGGER} where is example.com DNS managed?\`
 \`/ask who deployed the payment service?\`
 
 📊 Messages stored: ${count}`;
 
     await telegramBot.sendMessage(chatId, welcome, { parse_mode: "Markdown" });
   },
-
-  /**
-   * Stop the bot gracefully.
-   */
-  stop(): void {
-    if (bot) {
-      bot.stopPolling();
-      console.log("🛑 Telegram bot stopped");
-    }
-  },
 };
 
-/**
- * Truncate text to a maximum length.
- */
 function truncate(text: string, maxLength: number): string {
   if (text.length <= maxLength) return text;
   return text.slice(0, maxLength) + "...";
 }
 
-/**
- * Escape Telegram Markdown V1 special characters in dynamic text.
- * Characters: _ * ` [
- */
 function escapeMarkdown(text: string): string {
   return text.replace(/[_*`\[]/g, "\\$&");
 }

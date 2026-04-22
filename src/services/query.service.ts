@@ -26,8 +26,13 @@ import {
 export const QueryService = {
   /**
    * Answer a question using the company's stored knowledge.
+   * Scoped to a workspace; optionally narrowed to a single integration.
    */
-  async ask(question: string, workspaceId: string): Promise<BrainAnswer> {
+  async ask(
+    question: string,
+    workspaceId: string,
+    integrationId?: string,
+  ): Promise<BrainAnswer> {
     const useRerank = AIService.supportsRerank();
 
     // 1. Generate embedding for the question
@@ -42,17 +47,20 @@ export const QueryService = {
         queryEmbedding,
         MANUAL_RESERVED_SLOTS,
         MIN_SIMILARITY_THRESHOLD,
+        integrationId,
       ),
       MessageRepository.searchSimilar(
         queryEmbedding,
         workspaceId,
         fetchCount,
         MIN_SIMILARITY_THRESHOLD,
+        integrationId,
       ),
       MessageRepository.searchFullText(
         question,
         workspaceId,
         FULLTEXT_SEARCH_LIMIT,
+        integrationId,
       ),
     ]);
 
