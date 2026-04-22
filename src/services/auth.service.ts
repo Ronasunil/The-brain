@@ -49,13 +49,20 @@ export const AuthService = {
       avatar_url: payload.avatar_url,
     });
 
-    // Create auth record linked to user
-    await AuthRepository.create({
-      user_id: user.id,
-      email: payload.email,
-      username: payload.username,
-      password_hash: passwordHash,
-    });
+    // Create auth record linked to user. If this fails (e.g. a concurrent
+    // signup raced us on the unique username), roll back the user row so
+    // the email isn't permanently burned by an orphan users record.
+    try {
+      await AuthRepository.create({
+        user_id: user.id,
+        email: payload.email,
+        username: payload.username,
+        password_hash: passwordHash,
+      });
+    } catch (err) {
+      await UserRepository.delete(user.id).catch(() => {});
+      throw err;
+    }
 
     // Generate JWT
     const token = generateToken({
