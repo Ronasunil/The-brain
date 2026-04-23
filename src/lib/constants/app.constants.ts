@@ -39,6 +39,9 @@ export const RERANK_TOP_N = 12;
 // ─── Hybrid Search Constants ────────────────────────────────
 export const FULLTEXT_SEARCH_LIMIT = 30;
 
+// ─── Code Search Constants ──────────────────────────────────
+export const CODE_SEARCH_RESULTS = 3;
+
 // ─── Bot Constants ──────────────────────────────────────────────
 export const MAX_MESSAGE_LENGTH = 4096;
 export const MANUAL_RESERVED_SLOTS = 3;
@@ -57,7 +60,9 @@ Rules:
 5. If multiple messages contain relevant info, synthesize them into a clear answer.
 6. Format the response clearly for a chat interface (no markdown tables).
 7. When messages contradict each other on the same topic, ALWAYS trust the most recent message as the current state. The older message represents a previous state that has since changed.
-8. When reporting the current status of something, base your answer on the latest message about that topic and note how it changed over time if relevant.`;
+8. When reporting the current status of something, base your answer on the latest message about that topic and note how it changed over time if relevant.
+9. When context includes code snippets (from the project repository), cite the file path and line range. Format code references as: "In \`filepath:lineStart-lineEnd\` — [explanation]".
+10. You can synthesize answers from both team conversations AND codebase context. Clearly distinguish between what the code shows vs what team members said.`;
 
 export const KNOWLEDGE_EXTRACTION_PROMPT = `Analyze this message and determine if it contains important organizational knowledge.
 

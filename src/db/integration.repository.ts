@@ -141,4 +141,16 @@ export const IntegrationRepository = {
   async softDelete(id: string): Promise<void> {
     await this.updateStatus(id, "disconnected");
   },
+
+  async hardDelete(id: string): Promise<void> {
+    const supabase = getSupabaseClient();
+    const { error } = await supabase
+      .from("integrations")
+      .delete()
+      .eq("id", id);
+
+    if (error) {
+      throw new Error(`Failed to delete integration: ${error.message}`);
+    }
+  },
 };

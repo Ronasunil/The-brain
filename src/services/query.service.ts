@@ -1,6 +1,12 @@
 import { MessageRepository } from "../db/message.repository";
+import { CodeChunkRepository } from "../db/code-chunk.repository";
 import { AIService } from "./ai.service";
-import { BrainAnswer, SearchResult } from "../lib/types";
+import {
+  BrainAnswer,
+  BrainAnswerSource,
+  SearchResult,
+  CodeSearchResult,
+} from "../lib/types";
 import {
   MAX_SEARCH_RESULTS,
   MIN_SIMILARITY_THRESHOLD,
@@ -9,7 +15,37 @@ import {
   RERANK_TOP_N,
   FULLTEXT_SEARCH_LIMIT,
   MANUAL_RESERVED_SLOTS,
+  CODE_SEARCH_RESULTS,
 } from "../lib/constants/app.constants";
+
+interface UnifiedResult {
+  id: string;
+  content: string;
+  similarity: number;
+  origin: "message" | "code";
+  messageResult?: SearchResult;
+  codeResult?: CodeSearchResult;
+}
+
+function codeToUnified(result: CodeSearchResult): UnifiedResult {
+  return {
+    id: result.chunk.id,
+    content: result.chunk.content,
+    similarity: result.similarity,
+    origin: "code",
+    codeResult: result,
+  };
+}
+
+function messageToUnified(result: SearchResult): UnifiedResult {
+  return {
+    id: result.message.id,
+    content: result.message.content,
+    similarity: result.similarity,
+    origin: "message",
+    messageResult: result,
+  };
+}
 
 /**
  * Query Service — the brain's query pipeline.
@@ -17,31 +53,29 @@ import {
  * Flow:
  * 1. User asks a question
  * 2. Generate embedding of the question
- * 3. Hybrid search: cosine (semantic) + full-text (keyword) in parallel
+ * 3. Hybrid search: cosine + full-text across BOTH messages and code_chunks
  * 4. Merge and deduplicate results
  * 5. Rerank with Cohere rerank (if available)
  * 6. Send relevant context to AI
  * 7. Return structured answer with sources
  */
 export const QueryService = {
-  /**
-   * Answer a question using the company's stored knowledge.
-   * Scoped to a workspace; optionally narrowed to a single integration.
-   */
   async ask(
     question: string,
     workspaceId: string,
     integrationId?: string,
   ): Promise<BrainAnswer> {
     const useRerank = AIService.supportsRerank();
-
-    // 1. Generate embedding for the question
     const queryEmbedding = await AIService.createEmbedding(question);
 
-    // 2. Pre-fetch authoritative manual facts (reserved slots).
-    //    Runs in parallel with the general hybrid search.
     const fetchCount = useRerank ? RERANK_INITIAL_FETCH : MAX_SEARCH_RESULTS;
-    const [manualResults, cosineResults, fulltextResults] = await Promise.all([
+    const [
+      manualResults,
+      cosineResults,
+      fulltextResults,
+      codeCosineResults,
+      codeFulltextResults,
+    ] = await Promise.all([
       MessageRepository.searchManual(
         workspaceId,
         queryEmbedding,
@@ -62,64 +96,102 @@ export const QueryService = {
         FULLTEXT_SEARCH_LIMIT,
         integrationId,
       ),
+      CodeChunkRepository.searchSimilar(
+        queryEmbedding,
+        workspaceId,
+        fetchCount,
+        MIN_SIMILARITY_THRESHOLD,
+      ),
+      CodeChunkRepository.searchFullText(
+        question,
+        workspaceId,
+        FULLTEXT_SEARCH_LIMIT,
+      ),
     ]);
 
-    // 3. Merge and deduplicate general results (cosine takes priority)
-    const merged = this.mergeResults(cosineResults, fulltextResults);
+    const mergedMessages = this.mergeResults(cosineResults, fulltextResults);
+    const mergedCode = this.mergeCodeResults(
+      codeCosineResults,
+      codeFulltextResults,
+    );
 
-    // 4. Rerank general results if provider supports it
-    let generalResults: SearchResult[];
-    if (useRerank && merged.length > 0) {
-      const documents = merged.map((r) => r.message.content);
+    const allUnified: UnifiedResult[] = [
+      ...mergedMessages.map(messageToUnified),
+      ...mergedCode.map(codeToUnified),
+    ];
+
+    let rankedUnified: UnifiedResult[];
+    if (useRerank && allUnified.length > 0) {
+      const documents = allUnified.map((r) => r.content);
       const reranked = await AIService.rerank(question, documents, {
         topN: RERANK_TOP_N,
         model: RERANK_MODEL,
       });
 
-      generalResults = reranked.map((r) => ({
-        ...merged[r.index],
+      rankedUnified = reranked.map((r) => ({
+        ...allUnified[r.index],
         similarity: r.relevanceScore,
       }));
     } else {
-      generalResults = merged.slice(0, MAX_SEARCH_RESULTS);
+      rankedUnified = allUnified
+        .sort((a, b) => b.similarity - a.similarity)
+        .slice(0, MAX_SEARCH_RESULTS + CODE_SEARCH_RESULTS);
     }
 
-    // 5. Manual slots first, then general (dedup by id to avoid showing a fact twice)
     const manualIds = new Set(manualResults.map((r) => r.message.id));
-    const dedupedGeneral = generalResults.filter(
-      (r) => !manualIds.has(r.message.id),
+    const dedupedRanked = rankedUnified.filter(
+      (r) => !manualIds.has(r.id),
     );
-    const finalResults: SearchResult[] = [
-      ...manualResults,
-      ...dedupedGeneral.slice(0, MAX_SEARCH_RESULTS - manualResults.length),
-    ];
 
-    // 6. Generate AI answer — pass manual facts separately so they get the
-    //    ground-truth authority prompt instruction
+    const totalSlots = MAX_SEARCH_RESULTS + CODE_SEARCH_RESULTS;
+    const finalUnified: UnifiedResult[] = dedupedRanked.slice(
+      0,
+      totalSlots - manualResults.length,
+    );
+
+    const manualAsUnified: UnifiedResult[] = manualResults.map(messageToUnified);
+    const allFinal = [...manualAsUnified, ...finalUnified];
+
+    const finalSearchResults: SearchResult[] = allFinal
+      .filter((u) => u.origin === "message" && u.messageResult)
+      .map((u) => u.messageResult!);
+
     const answer = await AIService.generateAnswer(
       question,
-      finalResults,
+      finalSearchResults,
       manualResults.length > 0 ? manualResults : undefined,
+      allFinal
+        .filter((u) => u.origin === "code" && u.codeResult)
+        .map((u) => u.codeResult!),
     );
 
-    // 7. Build response with sources
-    return {
-      answer,
-      sources: finalResults.map((result) => ({
-        content: result.message.content,
-        user_name: result.message.user_name,
-        source: result.message.source,
-        timestamp: result.message.timestamp,
-        similarity: Math.round(result.similarity * 100) / 100,
-      })),
-    };
+    const sources: BrainAnswerSource[] = allFinal.map((u) => {
+      if (u.origin === "code" && u.codeResult) {
+        const chunk = u.codeResult.chunk;
+        return {
+          content: chunk.content,
+          user_name: "github",
+          source: "github" as const,
+          timestamp: chunk.created_at,
+          similarity: Math.round(u.similarity * 100) / 100,
+          file_path: chunk.file_path,
+          line_start: chunk.line_start ?? undefined,
+          line_end: chunk.line_end ?? undefined,
+        };
+      }
+      const msg = u.messageResult!.message;
+      return {
+        content: msg.content,
+        user_name: msg.user_name,
+        source: msg.source,
+        timestamp: msg.timestamp,
+        similarity: Math.round(u.similarity * 100) / 100,
+      };
+    });
+
+    return { answer, sources };
   },
 
-  /**
-   * Merge cosine and full-text results, deduplicating by message ID.
-   * Cosine results come first (they already have similarity scores).
-   * Full-text results are appended if not already present.
-   */
   mergeResults(
     cosineResults: SearchResult[],
     fulltextResults: SearchResult[],
@@ -135,6 +207,28 @@ export const QueryService = {
     for (const result of fulltextResults) {
       if (!seen.has(result.message.id)) {
         seen.add(result.message.id);
+        merged.push(result);
+      }
+    }
+
+    return merged;
+  },
+
+  mergeCodeResults(
+    cosineResults: CodeSearchResult[],
+    fulltextResults: CodeSearchResult[],
+  ): CodeSearchResult[] {
+    const seen = new Set<string>();
+    const merged: CodeSearchResult[] = [];
+
+    for (const result of cosineResults) {
+      seen.add(result.chunk.id);
+      merged.push(result);
+    }
+
+    for (const result of fulltextResults) {
+      if (!seen.has(result.chunk.id)) {
+        seen.add(result.chunk.id);
         merged.push(result);
       }
     }

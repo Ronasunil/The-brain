@@ -5,6 +5,7 @@ export type {
   CreateMessageInput,
   SearchResult,
   BrainAnswer,
+  BrainAnswerSource,
   RememberedItem,
 } from "./message.types";
 export { MESSAGE_SOURCES } from "./message.types";
@@ -39,3 +40,9 @@ export type {
   CreateWorkspaceInput,
   UpdateWorkspaceInput,
 } from "./workspace.types";
+export type {
+  CodeChunk,
+  CreateCodeChunkInput,
+  CodeSearchResult,
+  GitHubIntegrationConfig,
+} from "./code-chunk.types";

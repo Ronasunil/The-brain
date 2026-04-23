@@ -1,4 +1,5 @@
 import { MessageRepository } from "../db/message.repository";
+import { CodeChunkRepository } from "../db/code-chunk.repository";
 import { AIService } from "./ai.service";
 import {
   EMBEDDING_WORKER_INTERVAL_MS,
@@ -49,16 +50,13 @@ export const EmbeddingWorker = {
    * Process one batch of unembedded messages.
    */
   async processBatch(): Promise<number> {
+    let embedded = 0;
+
     const messages = await MessageRepository.getUnembedded(
       EMBEDDING_WORKER_BATCH_SIZE,
     );
 
-    if (messages.length === 0) return 0;
-
-    let embedded = 0;
-
     for (const msg of messages) {
-      // Skip messages too short to embed meaningfully
       if (!msg.content || msg.content.trim().length < MIN_MESSAGE_LENGTH) {
         continue;
       }
@@ -69,7 +67,6 @@ export const EmbeddingWorker = {
         embedded++;
       } catch (error) {
         console.error(`⚠️ Failed to embed message ${msg.id}:`, error);
-        // Continue with next message — don't fail the whole batch
       }
     }
 
@@ -77,7 +74,33 @@ export const EmbeddingWorker = {
       console.log(`🔄 Embedded ${embedded}/${messages.length} messages`);
     }
 
-    return embedded;
+    const chunks = await CodeChunkRepository.getUnembedded(
+      EMBEDDING_WORKER_BATCH_SIZE,
+    );
+
+    let embeddedChunks = 0;
+
+    for (const chunk of chunks) {
+      if (!chunk.content || chunk.content.trim().length < MIN_MESSAGE_LENGTH) {
+        continue;
+      }
+
+      try {
+        const embedding = await AIService.createEmbedding(chunk.content);
+        await CodeChunkRepository.updateEmbedding(chunk.id, embedding);
+        embeddedChunks++;
+      } catch (error) {
+        console.error(`⚠️ Failed to embed code chunk ${chunk.id}:`, error);
+      }
+    }
+
+    if (embeddedChunks > 0) {
+      console.log(
+        `🔄 Embedded ${embeddedChunks}/${chunks.length} code chunks`,
+      );
+    }
+
+    return embedded + embeddedChunks;
   },
 
   /**

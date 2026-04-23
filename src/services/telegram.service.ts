@@ -143,12 +143,20 @@ export const TelegramBotService = {
     if (result.sources.length > 0) {
       response += "\n\n📎 *Sources:*";
       for (const source of result.sources) {
-        const date = new Date(source.timestamp).toLocaleDateString("en-US", {
-          year: "numeric",
-          month: "short",
-          day: "numeric",
-        });
-        response += `\n• _"${escapeMarkdown(truncate(source.content, 80))}"_ — ${escapeMarkdown(source.user_name)} via ${source.source} (${date})`;
+        if (source.source === "github" && source.file_path) {
+          const loc =
+            source.line_start && source.line_end
+              ? `:${source.line_start}-${source.line_end}`
+              : "";
+          response += `\n• \`${source.file_path}${loc}\` (code)`;
+        } else {
+          const date = new Date(source.timestamp).toLocaleDateString("en-US", {
+            year: "numeric",
+            month: "short",
+            day: "numeric",
+          });
+          response += `\n• _"${escapeMarkdown(truncate(source.content, 80))}"_ — ${escapeMarkdown(source.user_name)} via ${source.source} (${date})`;
+        }
       }
     }
 

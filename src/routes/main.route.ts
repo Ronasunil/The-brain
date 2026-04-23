@@ -7,6 +7,7 @@ import { authRouter } from "./auth.route";
 import { telegramRouter } from "./telegram.route";
 import { workspaceRouter } from "./workspace.route";
 import { integrationRouter } from "./integration.route";
+import { githubRouter } from "./github.route";
 
 const mainRouter = Router();
 
@@ -15,6 +16,7 @@ mainRouter.use("/brain", brainRouter);
 mainRouter.use("/import", importRouter);
 mainRouter.use("/auth", authRouter);
 mainRouter.use("/telegram", telegramRouter);
+mainRouter.use("/github", githubRouter);
 mainRouter.use("/workspaces", workspaceRouter);
 mainRouter.use("/workspaces/:workspaceId/integrations", integrationRouter);
 

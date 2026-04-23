@@ -5,7 +5,7 @@ import {
   validateBody,
   requireWorkspaceAccess,
 } from "../lib/middleware";
-import { createTelegramIntegrationSchema } from "../lib/validations/integration.schema";
+import { createIntegrationSchema } from "../lib/validations/integration.schema";
 
 const router = Router({ mergeParams: true });
 
@@ -13,7 +13,7 @@ router.post(
   "/",
   authenticate as any,
   requireWorkspaceAccess as any,
-  validateBody(createTelegramIntegrationSchema),
+  validateBody(createIntegrationSchema),
   IntegrationController.create,
 );
 
@@ -36,6 +36,13 @@ router.delete(
   authenticate as any,
   requireWorkspaceAccess as any,
   IntegrationController.disconnect,
+);
+
+router.delete(
+  "/:id/permanent",
+  authenticate as any,
+  requireWorkspaceAccess as any,
+  IntegrationController.remove,
 );
 
 export { router as integrationRouter };

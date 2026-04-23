@@ -56,6 +56,12 @@ export interface IntegrationResponse {
   type: IntegrationType;
   display_name: string;
   bot_username: string | null;
+  repo_url: string | null;
+  branch: string | null;
+  last_synced_at: string | null;
+  chunk_count: number | null;
+  last_commit_message: string | null;
+  last_commit_sha: string | null;
   status: IntegrationStatus;
   last_error: string | null;
   created_at: Date;

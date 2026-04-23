@@ -66,13 +66,18 @@ export interface SearchResult {
 /**
  * AI-generated answer with sources.
  */
+export interface BrainAnswerSource {
+  content: string;
+  user_name: string;
+  source: MessageSource | "github";
+  timestamp: Date;
+  similarity: number;
+  file_path?: string;
+  line_start?: number;
+  line_end?: number;
+}
+
 export interface BrainAnswer {
   answer: string;
-  sources: Array<{
-    content: string;
-    user_name: string;
-    source: MessageSource;
-    timestamp: Date;
-    similarity: number;
-  }>;
+  sources: BrainAnswerSource[];
 }

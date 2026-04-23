@@ -35,6 +35,10 @@ const envSchema = z.object({
 
   // Integration secrets — base64-encoded 32-byte AES-256 key (44 chars)
   INTEGRATION_ENCRYPTION_KEY: z.string().min(44).max(44),
+
+  // GitHub codebase indexing
+  GITHUB_REPOS_DIR: z.string().default("./data/repos"),
+  GITHUB_SYNC_INTERVAL_MS: z.string().default("3600000"),
 });
 
 const parsed = envSchema.safeParse(process.env);

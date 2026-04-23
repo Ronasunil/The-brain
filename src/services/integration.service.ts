@@ -10,6 +10,7 @@ import {
   IntegrationResponse,
   TelegramIntegrationConfig,
 } from "../lib/types/integration.types";
+import { GitHubIntegrationConfig } from "../lib/types/code-chunk.types";
 
 const WEBHOOK_PATH_PREFIX = "/api/v1/telegram/webhook";
 
@@ -30,6 +31,30 @@ export const IntegrationService = {
       type: integration.type,
       display_name: integration.display_name,
       bot_username: botUsername,
+      repo_url:
+        typeof integration.config.repo_url === "string"
+          ? integration.config.repo_url
+          : null,
+      branch:
+        typeof integration.config.branch === "string"
+          ? integration.config.branch
+          : null,
+      last_synced_at:
+        typeof integration.config.last_synced_at === "string"
+          ? integration.config.last_synced_at
+          : null,
+      chunk_count:
+        typeof integration.config.chunk_count === "number"
+          ? integration.config.chunk_count
+          : null,
+      last_commit_message:
+        typeof integration.config.last_commit_message === "string"
+          ? integration.config.last_commit_message
+          : null,
+      last_commit_sha:
+        typeof integration.config.last_commit_sha === "string"
+          ? integration.config.last_commit_sha
+          : null,
       status: integration.status,
       last_error: integration.last_error,
       created_at: integration.created_at,
@@ -110,6 +135,44 @@ export const IntegrationService = {
     }
   },
 
+  async createGitHub(params: {
+    workspaceId: string;
+    userId: string;
+    repoUrl: string;
+    accessToken?: string;
+    branch?: string;
+    displayName: string;
+  }): Promise<Integration> {
+    await WorkspaceService.assertOwnership(params.userId, params.workspaceId);
+
+    const branch = params.branch || "main";
+    const webhookSecret = crypto.randomBytes(32).toString("hex");
+
+    const config: GitHubIntegrationConfig = {
+      repo_url: params.repoUrl,
+      branch,
+    };
+
+    if (params.accessToken) {
+      const encrypted = encrypt(params.accessToken);
+      config.access_token_ciphertext = encrypted.ciphertext;
+      config.access_token_iv = encrypted.iv;
+      config.access_token_tag = encrypted.tag;
+    }
+
+    const integration = await IntegrationRepository.create({
+      workspace_id: params.workspaceId,
+      type: "github",
+      display_name: params.displayName,
+      config,
+      webhook_secret: webhookSecret,
+      status: "pending",
+      created_by: params.userId,
+    });
+
+    return integration;
+  },
+
   async disconnect(id: string, userId: string): Promise<Integration> {
     const integration = await this.getById(id, userId);
 
@@ -125,7 +188,40 @@ export const IntegrationService = {
       }
     }
 
+    if (integration.type === "github") {
+      const { GitHubService } = await import("./github.service");
+      try {
+        await GitHubService.removeRepository(id);
+      } catch (err: any) {
+        console.warn(
+          `GitHub repo cleanup failed for integration ${id}: ${err?.message}`,
+        );
+      }
+    }
+
     return IntegrationRepository.updateStatus(id, "disconnected", null);
+  },
+
+  async remove(id: string, userId: string): Promise<void> {
+    const integration = await this.getById(id, userId);
+
+    if (integration.status !== "disconnected") {
+      throw new AppError(
+        "Only disconnected integrations can be permanently removed",
+        400,
+      );
+    }
+
+    if (integration.type === "github") {
+      const { GitHubService } = await import("./github.service");
+      try {
+        await GitHubService.removeRepository(id);
+      } catch {
+        // already cleaned up during disconnect
+      }
+    }
+
+    await IntegrationRepository.hardDelete(id);
   },
 
   getDecryptedToken(integration: Integration): string {
@@ -142,6 +238,27 @@ export const IntegrationService = {
       ciphertext: cfg.bot_token_ciphertext,
       iv: cfg.bot_token_iv,
       tag: cfg.bot_token_tag,
+    });
+  },
+
+  getDecryptedGitHubToken(integration: Integration): string {
+    const cfg = integration.config as Partial<GitHubIntegrationConfig>;
+
+    if (
+      !cfg.access_token_ciphertext ||
+      !cfg.access_token_iv ||
+      !cfg.access_token_tag
+    ) {
+      throw new AppError(
+        `Integration ${integration.id} has no encrypted GitHub token`,
+        500,
+      );
+    }
+
+    return decrypt({
+      ciphertext: cfg.access_token_ciphertext,
+      iv: cfg.access_token_iv,
+      tag: cfg.access_token_tag,
     });
   },
 
