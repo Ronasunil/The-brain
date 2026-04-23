@@ -125,6 +125,15 @@ export const IntegrationService = {
       }
     }
 
+    if (integration.type === "linear") {
+      // Lazy import to avoid circular dependency (LinearService uses
+      // IntegrationRepository, not IntegrationService, but keep it clean).
+      const { LinearService } = await import("./linear.service");
+      await LinearService.disconnect(integration);
+      const refreshed = await IntegrationRepository.findById(id);
+      if (refreshed) return refreshed;
+    }
+
     return IntegrationRepository.updateStatus(id, "disconnected", null);
   },
 

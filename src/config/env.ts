@@ -35,6 +35,11 @@ const envSchema = z.object({
 
   // Integration secrets — base64-encoded 32-byte AES-256 key (44 chars)
   INTEGRATION_ENCRYPTION_KEY: z.string().min(44).max(44),
+
+  // Linear OAuth app (register at https://linear.app/settings/api/applications)
+  LINEAR_CLIENT_ID: z.string().optional(),
+  LINEAR_CLIENT_SECRET: z.string().optional(),
+  LINEAR_OAUTH_REDIRECT_URI: z.string().url().optional(),
 });
 
 const parsed = envSchema.safeParse(process.env);
