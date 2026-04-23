@@ -2,6 +2,8 @@ import http from "node:http";
 import { app } from "./app";
 import { env } from "./config/env";
 import { EmbeddingWorker } from "./services/embedding.worker";
+import { LinearService } from "./services/linear.service";
+import { AggregationService } from "./services/aggregation.service";
 import { GitHubSyncWorker } from "./services/github-sync.worker";
 import { initSocketIO } from "./socket";
 
@@ -27,6 +29,21 @@ httpServer.listen(PORT, () => {
 
   // ─── Start Background Workers ──────────
   EmbeddingWorker.start();
+
+  // ─── Resume any Linear backfills that were interrupted ─
+  LinearService.resumePendingBackfills().catch((err) => {
+    console.error("Linear resume hook failed:", err?.message ?? err);
+  });
+
+  // ─── Drain any unprocessed Linear webhook events persisted before crash ─
+  LinearService.drainPersistedEvents().catch((err) => {
+    console.error("Linear event-queue drain failed:", err?.message ?? err);
+  });
+
+  // ─── Warm up Gemini so the first classifier call doesn't cold-start ─
+  AggregationService.warmUp().catch(() => {
+    /* opportunistic — never blocks */
+  });
   GitHubSyncWorker.start();
 });
 
@@ -34,12 +51,14 @@ httpServer.listen(PORT, () => {
 process.on("SIGINT", () => {
   console.log("\n🛑 Shutting down OrgBrain...");
   EmbeddingWorker.stop();
+  LinearService.stopWorker();
   GitHubSyncWorker.stop();
   process.exit(0);
 });
 
 process.on("SIGTERM", () => {
   EmbeddingWorker.stop();
+  LinearService.stopWorker();
   GitHubSyncWorker.stop();
   process.exit(0);
 });

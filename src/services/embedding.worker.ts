@@ -1,4 +1,8 @@
 import { MessageRepository } from "../db/message.repository";
+import {
+  EntityRepository,
+  EntityCommentRepository,
+} from "../db/entity.repository";
 import { CodeChunkRepository } from "../db/code-chunk.repository";
 import { AIService } from "./ai.service";
 import {
@@ -47,31 +51,77 @@ export const EmbeddingWorker = {
   },
 
   /**
-   * Process one batch of unembedded messages.
+   * Process one batch of unembedded rows across messages, entities, and
+   * entity_comments. The batch budget is shared across all three sources so
+   * a big backfill on one source doesn't starve the others.
    */
   async processBatch(): Promise<number> {
-    let embedded = 0;
-
-    const messages = await MessageRepository.getUnembedded(
-      EMBEDDING_WORKER_BATCH_SIZE,
+    // Fair-share budget: each source gets ~1/3 of BATCH_SIZE so a large
+    // backlog on one source can't monopolize the batch.
+    const perSourceBudget = Math.max(
+      1,
+      Math.ceil(EMBEDDING_WORKER_BATCH_SIZE / 3),
     );
+
+    const [messages, entities, comments] = await Promise.all([
+      MessageRepository.getUnembedded(perSourceBudget),
+      EntityRepository.getUnembedded(perSourceBudget),
+      EntityCommentRepository.getUnembedded(perSourceBudget),
+    ]);
+
+    let embedded = 0;
 
     for (const msg of messages) {
       if (!msg.content || msg.content.trim().length < MIN_MESSAGE_LENGTH) {
         continue;
       }
-
       try {
         const embedding = await AIService.createEmbedding(msg.content);
         await MessageRepository.updateEmbedding(msg.id, embedding);
         embedded++;
       } catch (error) {
         console.error(`⚠️ Failed to embed message ${msg.id}:`, error);
+        // Continue with next message — don't fail the whole batch
+      }
+    }
+
+    for (const entity of entities) {
+      const text = [entity.title, entity.body]
+        .filter((s) => s && s.trim().length > 0)
+        .join("\n\n");
+      if (text.trim().length < MIN_MESSAGE_LENGTH) {
+        continue;
+      }
+      try {
+        const embedding = await AIService.createEmbedding(text);
+        await EntityRepository.updateEmbedding(entity.id, embedding);
+        embedded++;
+      } catch (error) {
+        console.error(`⚠️ Failed to embed entity ${entity.id}:`, error);
+      }
+    }
+
+    for (const comment of comments) {
+      if (
+        !comment.content ||
+        comment.content.trim().length < MIN_MESSAGE_LENGTH
+      ) {
+        continue;
+      }
+      try {
+        const embedding = await AIService.createEmbedding(comment.content);
+        await EntityCommentRepository.updateEmbedding(comment.id, embedding);
+        embedded++;
+      } catch (error) {
+        console.error(`⚠️ Failed to embed comment ${comment.id}:`, error);
       }
     }
 
     if (embedded > 0) {
-      console.log(`🔄 Embedded ${embedded}/${messages.length} messages`);
+      const total = messages.length + entities.length + comments.length;
+      console.log(
+        `🔄 Embedded ${embedded}/${total} rows (msgs ${messages.length}, entities ${entities.length}, comments ${comments.length})`,
+      );
     }
 
     const chunks = await CodeChunkRepository.getUnembedded(
