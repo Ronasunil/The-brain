@@ -7,6 +7,8 @@ export type {
   BrainAnswer,
   BrainAnswerSource,
   RememberedItem,
+  ChatMessage,
+  CreateChatMessageInput,
 } from "./message.types";
 export { MESSAGE_SOURCES } from "./message.types";
 export type {

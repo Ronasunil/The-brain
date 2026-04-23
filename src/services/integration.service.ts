@@ -263,15 +263,37 @@ export const IntegrationService = {
   },
 
   async getManualIntegration(workspaceId: string): Promise<Integration> {
-    const manual = await IntegrationRepository.findManualForWorkspace(
+    const existing = await IntegrationRepository.findManualForWorkspace(
       workspaceId,
     );
-    if (!manual) {
+    if (existing) {
+      return existing;
+    }
+
+    // Backward compatibility: older workspaces may predate manual integration seeding.
+    const workspace = await WorkspaceService.getById(workspaceId);
+    const webhookSecret = crypto.randomBytes(32).toString("hex");
+
+    await IntegrationRepository.create({
+      workspace_id: workspaceId,
+      type: "manual",
+      display_name: "Manual Notes",
+      webhook_secret: webhookSecret,
+      status: "active",
+      created_by: workspace.user_id ?? null,
+    });
+
+    const created = await IntegrationRepository.findManualForWorkspace(
+      workspaceId,
+    );
+
+    if (!created) {
       throw new AppError(
-        "Workspace is missing its manual integration — corrupt state",
+        "Workspace is missing its manual integration after auto-repair",
         500,
       );
     }
-    return manual;
+
+    return created;
   },
 };

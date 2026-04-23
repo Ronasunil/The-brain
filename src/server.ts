@@ -1,12 +1,18 @@
+import http from "node:http";
 import { app } from "./app";
 import { env } from "./config/env";
 import { EmbeddingWorker } from "./services/embedding.worker";
 import { GitHubSyncWorker } from "./services/github-sync.worker";
+import { initSocketIO } from "./socket";
 
 const PORT = parseInt(env.PORT, 10);
 
-// ─── Start Express Server ───────────────────────────
-app.listen(PORT, () => {
+const httpServer = http.createServer(app);
+
+initSocketIO(httpServer);
+
+// ─── Start HTTP + WebSocket Server ──────────────────
+httpServer.listen(PORT, () => {
   console.log(`
   ╔══════════════════════════════════════╗
   ║     🧠 OrgBrain V1 — Running        ║

@@ -7,6 +7,7 @@ export const MESSAGE_SOURCES = [
   "github",
   "linear",
   "manual",
+  "web",
 ] as const;
 export type MessageSource = (typeof MESSAGE_SOURCES)[number];
 
@@ -61,6 +62,29 @@ export interface RememberedItem {
 export interface SearchResult {
   message: StoredMessage;
   similarity: number;
+}
+
+/**
+ * Inbuilt chat message (group chat thread).
+ */
+export interface ChatMessage {
+  id: string;
+  workspace_id: string;
+  user_id: string | null;
+  user_name: string | null;
+  role: "user" | "assistant";
+  content: string;
+  sources: BrainAnswerSource[] | null;
+  created_at: Date;
+}
+
+export interface CreateChatMessageInput {
+  workspace_id: string;
+  user_id?: string | null;
+  user_name?: string | null;
+  role: "user" | "assistant";
+  content: string;
+  sources?: BrainAnswerSource[] | null;
 }
 
 /**
