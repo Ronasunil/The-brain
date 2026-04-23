@@ -49,13 +49,20 @@ export const AuthService = {
       avatar_url: payload.avatar_url,
     });
 
-    // Create auth record linked to user
-    await AuthRepository.create({
-      user_id: user.id,
-      email: payload.email,
-      username: payload.username,
-      password_hash: passwordHash,
-    });
+    // Create auth record linked to user. If this fails (e.g. a concurrent
+    // signup raced us on the unique username), roll back the user row so
+    // the email isn't permanently burned by an orphan users record.
+    try {
+      await AuthRepository.create({
+        user_id: user.id,
+        email: payload.email,
+        username: payload.username,
+        password_hash: passwordHash,
+      });
+    } catch (err) {
+      await UserRepository.delete(user.id).catch(() => {});
+      throw err;
+    }
 
     // Generate JWT
     const token = generateToken({
@@ -114,9 +121,7 @@ export const AuthService = {
 
   async forgotPassword(payload: ForgotPasswordPayload): Promise<void> {
     const auth = await AuthRepository.findByEmail(payload.email);
-    if (!auth) {
-      throw new AppError("User not found", 404);
-    }
+    if (!auth) return;
 
     // Generate 6-digit OTP
     const otp = crypto.randomInt(100000, 999999).toString();

@@ -16,6 +16,7 @@ export type MessageSource = (typeof MESSAGE_SOURCES)[number];
 export interface StoredMessage {
   id: string;
   workspace_id: string;
+  integration_id: string;
   source: MessageSource;
   source_message_id: string;
   user_name: string;
@@ -33,6 +34,7 @@ export interface StoredMessage {
  */
 export interface CreateMessageInput {
   workspace_id: string;
+  integration_id: string;
   source: MessageSource;
   source_message_id: string;
   user_name: string;
@@ -41,6 +43,16 @@ export interface CreateMessageInput {
   chat_name: string;
   content: string;
   timestamp: Date;
+}
+
+/**
+ * Curated response shape for POST /brain/remember.
+ */
+export interface RememberedItem {
+  id: string;
+  content: string;
+  timestamp: Date;
+  created_at: Date;
 }
 
 /**

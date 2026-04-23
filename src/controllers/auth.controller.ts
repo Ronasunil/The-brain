@@ -36,7 +36,8 @@ export const AuthController = {
   }),
 
   logout: withErrorHandler(async (_req: Request, res: Response) => {
-    res.clearCookie(COOKIE_NAME, COOKIE_OPTIONS);
+    const { maxAge: _maxAge, ...clearOptions } = COOKIE_OPTIONS;
+    res.clearCookie(COOKIE_NAME, clearOptions);
     res.status(200).json({
       status: 200,
       data: null,

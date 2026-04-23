@@ -20,17 +20,21 @@ const envSchema = z.object({
   ZHIPU_API_KEY: z.string().optional(),
   COHERE_API_KEY: z.string().min(1),
 
-  // Telegram
-  TELEGRAM_BOT_TOKEN: z.string().min(1),
-  TELEGRAM_WEBHOOK_URL: z.string().url().optional(),
+  // Public base URL used when registering per-integration Telegram webhooks
+  PUBLIC_BASE_URL: z.string().url(),
 
-  // Bot
-  BOT_USERNAME: z.string().default("orgbrain_bot"),
+  // Comma-separated browser origins allowed to make credentialed CORS requests
+  CLIENT_ORIGIN: z.string().default("http://localhost:5173"),
+
+  // Bot trigger
   BOT_TRIGGER: z.string().default("@orgbrain"),
 
   // Auth
   JWT_SECRET: z.string().min(32),
   JWT_EXPIRES_IN: z.string().default("30d"),
+
+  // Integration secrets — base64-encoded 32-byte AES-256 key (44 chars)
+  INTEGRATION_ENCRYPTION_KEY: z.string().min(44).max(44),
 });
 
 const parsed = envSchema.safeParse(process.env);

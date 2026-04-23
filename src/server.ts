@@ -1,6 +1,5 @@
 import { app } from "./app";
 import { env } from "./config/env";
-import { TelegramBotService } from "./services/telegram.service";
 import { EmbeddingWorker } from "./services/embedding.worker";
 
 const PORT = parseInt(env.PORT, 10);
@@ -16,8 +15,8 @@ app.listen(PORT, () => {
   ╚══════════════════════════════════════╝
   `);
 
-  // ─── Start Telegram Bot ─────────────────────────
-  TelegramBotService.start();
+  // Telegram bots are registered per-integration (see IntegrationService).
+  // No system-wide bot at boot.
 
   // ─── Start Background Embedding Worker ──────────
   EmbeddingWorker.start();
@@ -26,13 +25,11 @@ app.listen(PORT, () => {
 // ─── Graceful Shutdown ──────────────────────────────
 process.on("SIGINT", () => {
   console.log("\n🛑 Shutting down OrgBrain...");
-  TelegramBotService.stop();
   EmbeddingWorker.stop();
   process.exit(0);
 });
 
 process.on("SIGTERM", () => {
-  TelegramBotService.stop();
   EmbeddingWorker.stop();
   process.exit(0);
 });

@@ -1,14 +1,25 @@
 import { getSupabaseClient } from "./client";
 import { CreateMessageInput, StoredMessage, SearchResult } from "../lib/types";
 
-/**
- * Database operations for messages.
- * All raw SQL/Supabase calls live here — services call these methods.
- */
+function mapSearchRow(row: any): SearchResult["message"] {
+  return {
+    id: row.id,
+    workspace_id: row.workspace_id,
+    integration_id: row.integration_id,
+    source: row.source,
+    source_message_id: row.source_message_id,
+    user_name: row.user_name,
+    user_id: row.user_id,
+    chat_id: row.chat_id,
+    chat_name: row.chat_name,
+    content: row.content,
+    timestamp: new Date(row.timestamp),
+    embedding: null,
+    created_at: new Date(row.created_at),
+  };
+}
+
 export const MessageRepository = {
-  /**
-   * Insert a new message into the database.
-   */
   async create(input: CreateMessageInput): Promise<StoredMessage> {
     const supabase = getSupabaseClient();
 
@@ -16,6 +27,7 @@ export const MessageRepository = {
       .from("messages")
       .insert({
         workspace_id: input.workspace_id,
+        integration_id: input.integration_id,
         source: input.source,
         source_message_id: input.source_message_id,
         user_name: input.user_name,
@@ -29,10 +41,10 @@ export const MessageRepository = {
       .single();
 
     if (error) {
-      // Duplicate message — return existing
       if (error.code === "23505") {
-        const existing = await this.findBySourceId(
-          input.source,
+        const existing = await this.findByDedupKey(
+          input.integration_id,
+          input.chat_id,
           input.source_message_id,
         );
         if (existing) return existing;
@@ -43,11 +55,9 @@ export const MessageRepository = {
     return data as StoredMessage;
   },
 
-  /**
-   * Find a message by source platform + original message ID.
-   */
-  async findBySourceId(
-    source: string,
+  async findByDedupKey(
+    integrationId: string,
+    chatId: string,
     sourceMessageId: string,
   ): Promise<StoredMessage | null> {
     const supabase = getSupabaseClient();
@@ -55,17 +65,15 @@ export const MessageRepository = {
     const { data, error } = await supabase
       .from("messages")
       .select()
-      .eq("source", source)
+      .eq("integration_id", integrationId)
+      .eq("chat_id", chatId)
       .eq("source_message_id", sourceMessageId)
-      .single();
+      .maybeSingle();
 
     if (error) return null;
-    return data as StoredMessage;
+    return (data as StoredMessage) ?? null;
   },
 
-  /**
-   * Update the embedding vector for a message.
-   */
   async updateEmbedding(messageId: string, embedding: number[]): Promise<void> {
     const supabase = getSupabaseClient();
 
@@ -79,55 +87,33 @@ export const MessageRepository = {
     }
   },
 
-  /**
-   * Semantic search using pgvector cosine similarity.
-   * Calls the search_messages Postgres function.
-   */
   async searchSimilar(
     queryEmbedding: number[],
     workspaceId: string,
     limit: number = 5,
     threshold: number = 0.3,
+    integrationId?: string,
   ): Promise<SearchResult[]> {
     const supabase = getSupabaseClient();
-
-    console.log("hitted ehre");
 
     const { data, error } = await supabase.rpc("search_messages", {
       query_embedding: JSON.stringify(queryEmbedding),
       match_workspace_id: workspaceId,
       match_count: limit,
       similarity_threshold: threshold,
+      match_integration_id: integrationId ?? null,
     });
 
-    console.log(data);
     if (error) {
       throw new Error(`Search failed: ${error.message}`);
     }
 
     return (data || []).map((row: any) => ({
-      message: {
-        id: row.id,
-        workspace_id: row.workspace_id,
-        source: row.source,
-        source_message_id: row.source_message_id,
-        user_name: row.user_name,
-        user_id: row.user_id,
-        chat_id: row.chat_id,
-        chat_name: row.chat_name,
-        content: row.content,
-        timestamp: new Date(row.timestamp),
-        embedding: null, // Not returned from search
-        created_at: new Date(row.created_at),
-      } as StoredMessage,
+      message: mapSearchRow(row),
       similarity: row.similarity,
     }));
   },
 
-  /**
-   * Batch insert messages (skips duplicates).
-   * Used for bulk imports — much faster than individual inserts.
-   */
   async createBatch(inputs: CreateMessageInput[]): Promise<number> {
     if (inputs.length === 0) return 0;
 
@@ -135,6 +121,7 @@ export const MessageRepository = {
 
     const rows = inputs.map((input) => ({
       workspace_id: input.workspace_id,
+      integration_id: input.integration_id,
       source: input.source,
       source_message_id: input.source_message_id,
       user_name: input.user_name,
@@ -148,7 +135,7 @@ export const MessageRepository = {
     const { data, error } = await supabase
       .from("messages")
       .upsert(rows, {
-        onConflict: "source,source_message_id",
+        onConflict: "integration_id,chat_id,source_message_id",
         ignoreDuplicates: true,
       })
       .select("id");
@@ -160,10 +147,6 @@ export const MessageRepository = {
     return data?.length || 0;
   },
 
-  /**
-   * Get messages that don't have embeddings yet.
-   * Used by the background embedding worker.
-   */
   async getUnembedded(limit: number = 50): Promise<StoredMessage[]> {
     const supabase = getSupabaseClient();
 
@@ -175,16 +158,12 @@ export const MessageRepository = {
       .limit(limit);
 
     if (error) {
-      console.log(error);
       throw new Error(`Failed to fetch unembedded messages: ${error.message}`);
     }
 
     return (data || []) as StoredMessage[];
   },
 
-  /**
-   * Get total message count for a workspace.
-   */
   async count(workspaceId: string): Promise<number> {
     const supabase = getSupabaseClient();
 
@@ -197,14 +176,38 @@ export const MessageRepository = {
     return count || 0;
   },
 
-  /**
-   * Full-text keyword search using PostgreSQL tsvector.
-   * Calls the search_messages_fulltext Postgres function.
-   */
+  async searchManual(
+    workspaceId: string,
+    queryEmbedding: number[],
+    limit: number,
+    threshold: number,
+    integrationId?: string,
+  ): Promise<SearchResult[]> {
+    const supabase = getSupabaseClient();
+
+    const { data, error } = await supabase.rpc("search_messages_manual", {
+      query_embedding: JSON.stringify(queryEmbedding),
+      match_workspace_id: workspaceId,
+      match_count: limit,
+      similarity_threshold: threshold,
+      match_integration_id: integrationId ?? null,
+    });
+
+    if (error) {
+      throw new Error(`Manual search failed: ${error.message}`);
+    }
+
+    return (data || []).map((row: any) => ({
+      message: mapSearchRow(row),
+      similarity: row.similarity,
+    }));
+  },
+
   async searchFullText(
     query: string,
     workspaceId: string,
     limit: number = 20,
+    integrationId?: string,
   ): Promise<SearchResult[]> {
     const supabase = getSupabaseClient();
 
@@ -212,6 +215,7 @@ export const MessageRepository = {
       search_query: query,
       match_workspace_id: workspaceId,
       match_count: limit,
+      match_integration_id: integrationId ?? null,
     });
 
     if (error) {
@@ -219,20 +223,7 @@ export const MessageRepository = {
     }
 
     return (data || []).map((row: any) => ({
-      message: {
-        id: row.id,
-        workspace_id: row.workspace_id,
-        source: row.source,
-        source_message_id: row.source_message_id,
-        user_name: row.user_name,
-        user_id: row.user_id,
-        chat_id: row.chat_id,
-        chat_name: row.chat_name,
-        content: row.content,
-        timestamp: new Date(row.timestamp),
-        embedding: null,
-        created_at: new Date(row.created_at),
-      } as StoredMessage,
+      message: mapSearchRow(row),
       similarity: row.rank,
     }));
   },

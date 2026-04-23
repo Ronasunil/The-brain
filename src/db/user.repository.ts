@@ -1,4 +1,5 @@
 import { getSupabaseClient } from "./client";
+import { AppError } from "../lib/errors/app-error";
 import { UserRecord } from "../lib/types/auth.types";
 
 export const UserRepository = {
@@ -24,6 +25,9 @@ export const UserRepository = {
       .single();
 
     if (error) {
+      if (error.code === "23505") {
+        throw new AppError("Email already exists", 409);
+      }
       throw new Error(`Failed to create user: ${error.message}`);
     }
 

@@ -7,7 +7,7 @@ import {
   forgotPasswordSchema,
   resetPasswordSchema,
 } from "../lib/validations/auth.schema";
-import { AuthenticatedRequest } from "../lib/types/auth.types";
+
 
 const router = Router();
 

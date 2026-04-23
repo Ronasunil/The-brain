@@ -8,6 +8,7 @@ import {
   RERANK_MODEL,
   RERANK_TOP_N,
   FULLTEXT_SEARCH_LIMIT,
+  MANUAL_RESERVED_SLOTS,
 } from "../lib/constants/app.constants";
 
 /**
@@ -25,34 +26,49 @@ import {
 export const QueryService = {
   /**
    * Answer a question using the company's stored knowledge.
+   * Scoped to a workspace; optionally narrowed to a single integration.
    */
-  async ask(question: string, workspaceId: string): Promise<BrainAnswer> {
+  async ask(
+    question: string,
+    workspaceId: string,
+    integrationId?: string,
+  ): Promise<BrainAnswer> {
     const useRerank = AIService.supportsRerank();
 
     // 1. Generate embedding for the question
     const queryEmbedding = await AIService.createEmbedding(question);
 
-    // 2. Hybrid search — cosine + full-text in parallel
+    // 2. Pre-fetch authoritative manual facts (reserved slots).
+    //    Runs in parallel with the general hybrid search.
     const fetchCount = useRerank ? RERANK_INITIAL_FETCH : MAX_SEARCH_RESULTS;
-    const [cosineResults, fulltextResults] = await Promise.all([
+    const [manualResults, cosineResults, fulltextResults] = await Promise.all([
+      MessageRepository.searchManual(
+        workspaceId,
+        queryEmbedding,
+        MANUAL_RESERVED_SLOTS,
+        MIN_SIMILARITY_THRESHOLD,
+        integrationId,
+      ),
       MessageRepository.searchSimilar(
         queryEmbedding,
         workspaceId,
         fetchCount,
         MIN_SIMILARITY_THRESHOLD,
+        integrationId,
       ),
       MessageRepository.searchFullText(
         question,
         workspaceId,
         FULLTEXT_SEARCH_LIMIT,
+        integrationId,
       ),
     ]);
 
-    // 3. Merge and deduplicate (cosine results take priority)
+    // 3. Merge and deduplicate general results (cosine takes priority)
     const merged = this.mergeResults(cosineResults, fulltextResults);
 
-    // 4. Rerank if provider supports it
-    let finalResults: SearchResult[];
+    // 4. Rerank general results if provider supports it
+    let generalResults: SearchResult[];
     if (useRerank && merged.length > 0) {
       const documents = merged.map((r) => r.message.content);
       const reranked = await AIService.rerank(question, documents, {
@@ -60,20 +76,33 @@ export const QueryService = {
         model: RERANK_MODEL,
       });
 
-      finalResults = reranked.map((r) => ({
+      generalResults = reranked.map((r) => ({
         ...merged[r.index],
         similarity: r.relevanceScore,
       }));
     } else {
-      finalResults = merged.slice(0, MAX_SEARCH_RESULTS);
+      generalResults = merged.slice(0, MAX_SEARCH_RESULTS);
     }
 
-    // 5. Generate AI answer from context
-    const answer = await AIService.generateAnswer(question, finalResults);
+    // 5. Manual slots first, then general (dedup by id to avoid showing a fact twice)
+    const manualIds = new Set(manualResults.map((r) => r.message.id));
+    const dedupedGeneral = generalResults.filter(
+      (r) => !manualIds.has(r.message.id),
+    );
+    const finalResults: SearchResult[] = [
+      ...manualResults,
+      ...dedupedGeneral.slice(0, MAX_SEARCH_RESULTS - manualResults.length),
+    ];
 
-    console.log("Generated answer:", answer);
+    // 6. Generate AI answer — pass manual facts separately so they get the
+    //    ground-truth authority prompt instruction
+    const answer = await AIService.generateAnswer(
+      question,
+      finalResults,
+      manualResults.length > 0 ? manualResults : undefined,
+    );
 
-    // 6. Build response with sources
+    // 7. Build response with sources
     return {
       answer,
       sources: finalResults.map((result) => ({

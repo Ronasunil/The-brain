@@ -1,4 +1,5 @@
 import { getSupabaseClient } from "./client";
+import { AppError } from "../lib/errors/app-error";
 import { AuthRecord } from "../lib/types/auth.types";
 
 export const AuthRepository = {
@@ -22,6 +23,13 @@ export const AuthRepository = {
       .single();
 
     if (error) {
+      if (error.code === "23505") {
+        const msg = (error.message ?? "").toLowerCase();
+        if (msg.includes("username")) {
+          throw new AppError("Username already exists", 409);
+        }
+        throw new AppError("Email already exists", 409);
+      }
       throw new Error(`Failed to create auth record: ${error.message}`);
     }
 

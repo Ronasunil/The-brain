@@ -1,0 +1,63 @@
+export const INTEGRATION_TYPES = [
+  "telegram",
+  "slack",
+  "github",
+  "linear",
+  "manual",
+  "legacy-telegram",
+] as const;
+export type IntegrationType = (typeof INTEGRATION_TYPES)[number];
+
+export const INTEGRATION_STATUSES = [
+  "pending",
+  "active",
+  "paused",
+  "disconnected",
+  "error",
+] as const;
+export type IntegrationStatus = (typeof INTEGRATION_STATUSES)[number];
+
+export type IntegrationConfig = Record<string, unknown>;
+
+export interface TelegramIntegrationConfig extends IntegrationConfig {
+  bot_token_ciphertext: string;
+  bot_token_iv: string;
+  bot_token_tag: string;
+  bot_username: string;
+}
+
+export interface Integration {
+  id: string;
+  workspace_id: string;
+  type: IntegrationType;
+  display_name: string;
+  config: IntegrationConfig;
+  webhook_secret: string;
+  status: IntegrationStatus;
+  last_error: string | null;
+  created_by: string | null;
+  created_at: Date;
+  updated_at: Date;
+}
+
+export interface CreateIntegrationInput {
+  workspace_id: string;
+  type: IntegrationType;
+  display_name: string;
+  config?: IntegrationConfig;
+  webhook_secret: string;
+  status?: IntegrationStatus;
+  created_by?: string | null;
+}
+
+export interface IntegrationResponse {
+  id: string;
+  workspace_id: string;
+  type: IntegrationType;
+  display_name: string;
+  bot_username: string | null;
+  status: IntegrationStatus;
+  last_error: string | null;
+  created_at: Date;
+  updated_at: Date;
+}
