@@ -29,6 +29,7 @@ export interface LinearOrg {
 export interface LinearUserRef {
   id: string;
   name: string;
+  email?: string | null;
 }
 
 export interface LinearWorkflowState {
@@ -105,8 +106,8 @@ const ISSUE_FIELDS = `
   completedAt
   archivedAt
   state { id name type }
-  assignee { id name }
-  creator { id name }
+  assignee { id name email }
+  creator { id name email }
   team { id key }
   project { id name }
   cycle { id number startsAt endsAt }
@@ -116,7 +117,7 @@ const ISSUE_FIELDS = `
       id
       body
       createdAt
-      user { id name }
+      user { id name email }
     }
   }
 `;
@@ -314,6 +315,10 @@ export const LinearProvider = {
       resourceTypes: ["Issue", "Comment", "IssueLabel", "Project", "Cycle"],
       secret: webhookSecret,
       enabled: true,
+      // Subscribe to every public team in the workspace. Linear requires
+      // this OR a specific teamId; workspace-wide ingestion is the product
+      // intent, so we pick allPublicTeams.
+      allPublicTeams: true,
     };
 
     const data = await graphql<{

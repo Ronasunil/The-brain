@@ -8,11 +8,18 @@ import { WorkspaceService } from "../services/workspace.service";
 import { IntegrationService } from "../services/integration.service";
 import { AuthenticatedRequest } from "../lib/types/auth.types";
 import { LinearIntegrationConfig } from "../lib/types/integration.types";
+import { env } from "../config/env";
 import {
   LinearConnectPayload,
   LinearCallbackQuery,
   linearWebhookSchema,
 } from "../lib/validations/linear.schema";
+
+function clientRedirectBase(): string {
+  // CLIENT_ORIGIN may be comma-separated for CORS; pick the first origin for
+  // the post-OAuth redirect target.
+  return env.CLIENT_ORIGIN.split(",")[0].trim().replace(/\/$/, "");
+}
 
 export const LinearController = {
   /**
@@ -37,23 +44,31 @@ export const LinearController = {
   /**
    * GET /integrations/linear/callback?code=&state=
    * Public endpoint. Linear redirects the user here after OAuth consent.
+   * Responds with a 302 back to the SPA so the user lands on the dashboard
+   * with a query flag (?linear=connected | ?linear=error&message=…).
    */
   callback: withErrorHandler(async (req: Request, res: Response) => {
+    const base = clientRedirectBase();
     const { code, state } = req.query as unknown as LinearCallbackQuery;
+
     if (!code || !state) {
-      throw new AppError("Missing code or state", 400);
+      return res.redirect(
+        `${base}/dashboard?linear=error&message=${encodeURIComponent("Missing code or state")}`,
+      );
     }
 
-    const integration = await LinearService.completeOAuth({ code, state });
-
-    // Minimal inline confirmation — the real UX is a redirect to the SPA.
-    res.status(200).json({
-      status: 200,
-      data: {
-        integration: IntegrationService.toResponse(integration),
-      },
-      message: "Linear connected successfully",
-    });
+    try {
+      const integration = await LinearService.completeOAuth({ code, state });
+      const wsId = integration.workspace_id;
+      return res.redirect(
+        `${base}/dashboard?linear=connected&workspace=${encodeURIComponent(wsId)}`,
+      );
+    } catch (err: any) {
+      const message = err?.message ?? "Linear connection failed";
+      return res.redirect(
+        `${base}/dashboard?linear=error&message=${encodeURIComponent(message)}`,
+      );
+    }
   }),
 
   /**

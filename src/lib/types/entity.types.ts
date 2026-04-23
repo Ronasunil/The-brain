@@ -37,8 +37,10 @@ export interface LinearEntityState extends Record<string, unknown> {
   priority_label: string;
   assignee_id: string | null;
   assignee_name: string | null;
+  assignee_email: string | null;
   creator_id: string | null;
   creator_name: string | null;
+  creator_email: string | null;
   team_id: string | null;
   team_key: string | null;
   project_id: string | null;

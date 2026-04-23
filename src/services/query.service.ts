@@ -4,7 +4,8 @@ import {
   EntityCommentRepository,
 } from "../db/entity.repository";
 import { AIService } from "./ai.service";
-import { classifyQuestion, StructuralHints } from "./query-router";
+import { AggregationService } from "./aggregation.service";
+import { classifyQuestion } from "./query-router";
 import { BrainAnswer, SearchResult } from "../lib/types";
 import { EntitySearchResult, Entity } from "../lib/types/entity.types";
 import {
@@ -39,17 +40,56 @@ export const QueryService = {
     workspaceId: string,
     integrationId?: string,
   ): Promise<BrainAnswer> {
-    // Route: structural → SQL-only, zero embed cost. Short-circuit early.
+    // Ticket-ID short-circuit: if the user typed "ENG-423" we do an O(1)
+    // primary-key lookup and skip embeddings + rerank entirely. Every other
+    // question goes through the hybrid retrieval path below, where the
+    // enriched tsvector (migration 006) carries assignee / email / status /
+    // labels so questions like "assigned to rona@tghtech" work via FTS.
     const { klass, hints } = classifyQuestion(question);
-    if (klass === "structural") {
-      const entities = await runStructuralQuery(workspaceId, hints);
-      return structuralAnswer(question, entities, hints);
+    if (klass === "structural" && hints.ticketId) {
+      const externalId = `${hints.ticketId.teamKey}-${hints.ticketId.number}`;
+      const direct = await EntityRepository.findByExternalIdInWorkspace(
+        workspaceId,
+        externalId,
+      );
+      if (direct) return ticketLookupAnswer(direct);
+      // Fall through to semantic search if the exact ID didn't match —
+      // could be a typo or a team key we don't recognize.
     }
 
     const useRerank = AIService.supportsRerank();
 
-    // 1. Generate embedding for the question
-    const queryEmbedding = await AIService.createEmbedding(question);
+    // 1. In parallel: ask Gemini "is this an aggregation question?" AND
+    //    generate the embedding for the semantic path. Whichever one wins,
+    //    the other wasn't wasted — aggregation short-circuits and semantic
+    //    continues with the embedding we already paid for.
+    const [aggIntent, queryEmbedding] = await Promise.all([
+      AggregationService.classify(question),
+      AIService.createEmbedding(question),
+    ]);
+
+    if (aggIntent.intent === "aggregation") {
+      try {
+        return await AggregationService.execute(aggIntent, workspaceId);
+      } catch (err: any) {
+        // If the SQL aggregate failed, fall through to semantic rather than
+        // 500-ing the user. Logged so we can investigate.
+        console.warn(
+          "AggregationService.execute failed, falling through to semantic:",
+          err?.message ?? err,
+        );
+      }
+    }
+
+    // Dynamic similarity threshold: short questions don't carry enough signal
+    // for the default 0.3 to be useful, so we relax it. Long questions stay
+    // strict. Keeps false-positives down for rich queries while giving short
+    // ones a fighting chance.
+    const wordCount = question.trim().split(/\s+/).length;
+    const similarityThreshold =
+      wordCount <= 3
+        ? Math.min(MIN_SIMILARITY_THRESHOLD, 0.15)
+        : MIN_SIMILARITY_THRESHOLD;
 
     // 2. Pre-fetch manual facts + run message AND entity searches in parallel.
     //    Entities (Linear tickets) and their comments are first-class sources.
@@ -66,14 +106,14 @@ export const QueryService = {
         workspaceId,
         queryEmbedding,
         MANUAL_RESERVED_SLOTS,
-        MIN_SIMILARITY_THRESHOLD,
+        similarityThreshold,
         integrationId,
       ),
       MessageRepository.searchSimilar(
         queryEmbedding,
         workspaceId,
         fetchCount,
-        MIN_SIMILARITY_THRESHOLD,
+        similarityThreshold,
         integrationId,
       ),
       MessageRepository.searchFullText(
@@ -86,7 +126,7 @@ export const QueryService = {
         queryEmbedding,
         workspaceId,
         fetchCount,
-        MIN_SIMILARITY_THRESHOLD,
+        similarityThreshold,
       ),
       EntityRepository.searchFullText(
         question,
@@ -97,7 +137,7 @@ export const QueryService = {
         queryEmbedding,
         workspaceId,
         MAX_SEARCH_RESULTS,
-        MIN_SIMILARITY_THRESHOLD,
+        similarityThreshold,
       ),
     ]);
 
@@ -190,130 +230,34 @@ export const QueryService = {
   },
 };
 
-// ─── Structural (SQL-only) path ─────────────────
+// ─── Direct ticket-ID lookup answer ─────────────
 
-async function runStructuralQuery(
-  workspaceId: string,
-  hints: StructuralHints,
-): Promise<Entity[]> {
-  // Direct ticket-ID lookup — unambiguous, always return exactly that row.
-  // O(1) indexed lookup on (workspace_id, external_id). Regardless of status.
-  if (hints.ticketId) {
-    const externalId = `${hints.ticketId.teamKey}-${hints.ticketId.number}`;
-    const direct = await EntityRepository.findByExternalIdInWorkspace(
-      workspaceId,
-      externalId,
-    );
-    if (direct) return [direct];
-    return [];
-  }
-
-  // Decide status category from hints.
-  //   completedOnly → closed
-  //   explicit category → use it
-  //   assigneeMe + no status → default to 'open' ("my tickets" = my open tickets)
-  //   otherwise → 'open'
-  let statusCategory: "open" | "closed" | "cancelled" | "any" = "open";
-  if (hints.completedOnly) statusCategory = "closed";
-  else if (hints.statusCategory) statusCategory = hints.statusCategory;
-
-  // Time range: if the user said "today"/"this week", decide which field to
-  // filter on. For completed-intent questions use state.completed_at; for
-  // pending-style questions, use external_updated_at (recent activity).
-  const completedAfter =
-    hints.timeRange?.field === "completed" ? hints.timeRange.start : undefined;
-  const completedBefore =
-    hints.timeRange?.field === "completed" ? hints.timeRange.end : undefined;
-  const updatedAfter =
-    hints.timeRange?.field === "updated" ? hints.timeRange.start : undefined;
-  const updatedBefore =
-    hints.timeRange?.field === "updated" ? hints.timeRange.end : undefined;
-
-  return EntityRepository.queryTickets(workspaceId, {
-    statusCategory,
-    assigneeName: hints.personName ?? undefined,
-    priority: hints.priority ?? undefined,
-    teamKey: hints.teamKey ?? undefined,
-    completedAfter,
-    completedBefore,
-    updatedAfter,
-    updatedBefore,
-    limit: MAX_SEARCH_RESULTS,
-  });
-}
-
-function structuralAnswer(
-  _question: string,
-  entities: Entity[],
-  hints?: StructuralHints,
-): BrainAnswer {
-  if (entities.length === 0) {
-    const scope = hints ? describeScope(hints) : "your workspace";
-    return {
-      answer: `No tickets matched ${scope}. Either nothing fits, or the Linear integration hasn't finished backfilling.`,
-      sources: [],
-    };
-  }
-
-  const lines = entities.map((e) => formatTicketLine(e));
-  const header = hints ? describeResultHeader(hints, entities.length) : null;
-  const body = header ? `${header}\n${lines.join("\n")}` : lines.join("\n");
-
-  return {
-    answer: body,
-    sources: entities.map((e) => ({
-      content: e.title,
-      user_name: (e.state as any)?.assignee_name ?? "unknown",
-      source: "linear" as const,
-      timestamp: e.external_updated_at,
-      similarity: 1.0,
-    })),
-  };
-}
-
-function formatTicketLine(e: Entity): string {
+function ticketLookupAnswer(e: Entity): BrainAnswer {
   const state = e.state as Record<string, any>;
   const statusLabel = state.status_name ?? state.status ?? "unknown";
   const assignee = state.assignee_name ?? "unassigned";
   const priorityLabel = state.priority_label ?? "";
   const priority = priorityLabel ? ` [${priorityLabel}]` : "";
-
-  // If the ticket is done, show the completion date. This answers both
-  // "is it done?" AND "when was it done?" in one line.
   const completedAt = state.completed_at as string | null | undefined;
   const completion =
     completedAt && (state.status === "completed" || state.status === "cancelled")
       ? ` — completed ${formatDate(new Date(completedAt))}`
       : "";
 
-  return `• ${e.external_id} — ${e.title} (${statusLabel}, ${assignee})${priority}${completion}\n  ${e.external_url}`;
-}
+  const line = `• ${e.external_id} — ${e.title} (${statusLabel}, ${assignee})${priority}${completion}\n  ${e.external_url}`;
 
-function describeScope(hints: StructuralHints): string {
-  const parts: string[] = [];
-  if (hints.statusCategory === "closed" || hints.completedOnly) {
-    parts.push("completed tickets");
-  } else if (hints.statusCategory === "cancelled") {
-    parts.push("cancelled tickets");
-  } else if (hints.statusCategory === "open" || hints.statusCategory === null) {
-    parts.push("open tickets");
-  } else {
-    parts.push("tickets");
-  }
-  if (hints.assigneeMe) parts.push("assigned to you");
-  if (hints.personName) parts.push(`assigned to ${hints.personName}`);
-  if (hints.priority !== null) parts.push(`priority ${hints.priority}`);
-  if (hints.teamKey) parts.push(`in ${hints.teamKey}`);
-  if (hints.timeRange) parts.push(hints.timeRange.label);
-  return parts.join(", ");
-}
-
-function describeResultHeader(
-  hints: StructuralHints,
-  count: number,
-): string {
-  const scope = describeScope(hints);
-  return `Found ${count} ${scope}:`;
+  return {
+    answer: line,
+    sources: [
+      {
+        content: e.title,
+        user_name: assignee,
+        source: "linear" as const,
+        timestamp: e.external_updated_at,
+        similarity: 1.0,
+      },
+    ],
+  };
 }
 
 function formatDate(d: Date): string {

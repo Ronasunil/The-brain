@@ -2,6 +2,7 @@ import { app } from "./app";
 import { env } from "./config/env";
 import { EmbeddingWorker } from "./services/embedding.worker";
 import { LinearService } from "./services/linear.service";
+import { AggregationService } from "./services/aggregation.service";
 
 const PORT = parseInt(env.PORT, 10);
 
@@ -30,6 +31,11 @@ app.listen(PORT, () => {
   // ─── Drain any unprocessed Linear webhook events persisted before crash ─
   LinearService.drainPersistedEvents().catch((err) => {
     console.error("Linear event-queue drain failed:", err?.message ?? err);
+  });
+
+  // ─── Warm up Gemini so the first classifier call doesn't cold-start ─
+  AggregationService.warmUp().catch(() => {
+    /* opportunistic — never blocks */
   });
 });
 

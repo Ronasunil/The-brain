@@ -2,8 +2,11 @@ export const LINEAR_OAUTH_AUTHORIZE_URL = "https://linear.app/oauth/authorize";
 export const LINEAR_OAUTH_TOKEN_URL = "https://api.linear.app/oauth/token";
 export const LINEAR_GRAPHQL_URL = "https://api.linear.app/graphql";
 
-// Scopes: read everything, write nothing (v1 is read-only).
-export const LINEAR_OAUTH_SCOPES = ["read", "issues:create"].join(" ");
+// Scopes: `read` covers ingesting tickets + comments; `write` is required by
+// Linear for webhook management (webhookCreate / webhookDelete mutations),
+// not for modifying user data. v1 never calls any write mutations on user
+// content — the scope exists solely so we can subscribe to events.
+export const LINEAR_OAUTH_SCOPES = ["read", "write", "admin"].join(",");
 
 // Linear enforces ~1500 req/hr per token. Stay well under with 2.4s between
 // backfill pages (50 tickets per page = 60 pages/hr → ~3000 tickets/hr safely).

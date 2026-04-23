@@ -14,6 +14,108 @@ import {
   EntityType,
 } from "../lib/types/entity.types";
 
+export interface QueryTicketsOpts {
+  statusCategory?: "open" | "closed" | "cancelled" | "any";
+  assigneeId?: string;
+  assigneeName?: string;
+  assigneeEmail?: string;
+  priority?: number;
+  cycleId?: string;
+  teamKey?: string;
+  /** jsonb containment — any of these labels must be present on the ticket */
+  labels?: string[];
+  /** Inclusive lower bound on state.completed_at */
+  completedAfter?: Date;
+  /** Inclusive upper bound on state.completed_at */
+  completedBefore?: Date;
+  /** Inclusive bounds on external_updated_at */
+  updatedAfter?: Date;
+  updatedBefore?: Date;
+  limit?: number;
+}
+
+/**
+ * Apply every filter in `opts` to a Supabase query builder for the
+ * `entities` table (scoped to type='linear_ticket'). Single source of truth
+ * for ticket filtering — every query/count/sort path goes through this, so
+ * filters can never drift between call sites.
+ */
+function applyTicketFilters<Q extends { [k: string]: any }>(
+  query: Q,
+  opts: QueryTicketsOpts,
+): Q {
+  const category = opts.statusCategory ?? "open";
+
+  if (category === "open") {
+    query = query.in("state->>status", [...LINEAR_OPEN_STATUS_TYPES]);
+  } else if (category === "closed") {
+    query = query.eq("state->>status", "completed");
+  } else if (category === "cancelled") {
+    query = query.eq("state->>status", "cancelled");
+  }
+  // 'any' → no status predicate
+
+  if (opts.assigneeId) {
+    query = query.eq("state->>assignee_id", opts.assigneeId);
+  }
+  if (opts.assigneeName) {
+    const n = opts.assigneeName.replace(/[^A-Za-z0-9 _-]/g, "").trim();
+    if (n.length > 0) {
+      query = query.or(
+        [
+          `state->>assignee_name.ilike.${n}`,
+          `state->>assignee_name.ilike.${n} %`,
+          `state->>assignee_name.ilike.% ${n}`,
+          `state->>assignee_name.ilike.% ${n} %`,
+        ].join(","),
+      );
+    }
+  }
+  if (opts.assigneeEmail) {
+    // Exact email match — email is a unique-ish identifier, no fuzzy needed.
+    query = query.eq("state->>assignee_email", opts.assigneeEmail);
+  }
+  if (opts.priority !== undefined) {
+    query = query.eq("state->>priority", String(opts.priority));
+  }
+  if (opts.cycleId) {
+    query = query.eq("state->>cycle_id", opts.cycleId);
+  }
+  if (opts.teamKey) {
+    query = query.eq("state->>team_key", opts.teamKey);
+  }
+  if (opts.labels && opts.labels.length > 0) {
+    // jsonb @> containment — state.labels must contain ALL of these values.
+    query = query.contains("state->labels", opts.labels);
+  }
+  if (opts.completedAfter) {
+    query = query.gte(
+      "state->>completed_at",
+      opts.completedAfter.toISOString(),
+    );
+  }
+  if (opts.completedBefore) {
+    query = query.lte(
+      "state->>completed_at",
+      opts.completedBefore.toISOString(),
+    );
+  }
+  if (opts.updatedAfter) {
+    query = query.gte(
+      "external_updated_at",
+      opts.updatedAfter.toISOString(),
+    );
+  }
+  if (opts.updatedBefore) {
+    query = query.lte(
+      "external_updated_at",
+      opts.updatedBefore.toISOString(),
+    );
+  }
+
+  return query;
+}
+
 function mapEntityRow(row: any): Entity {
   return {
     id: row.id,
@@ -274,25 +376,9 @@ export const EntityRepository = {
    */
   async queryTickets(
     workspaceId: string,
-    opts: {
-      statusCategory?: "open" | "closed" | "cancelled" | "any";
-      assigneeId?: string;
-      assigneeName?: string;
-      priority?: number;
-      cycleId?: string;
-      teamKey?: string;
-      /** Inclusive lower bound on state.completed_at (ISO string or Date) */
-      completedAfter?: Date;
-      /** Inclusive upper bound on state.completed_at */
-      completedBefore?: Date;
-      /** Inclusive bounds on external_updated_at (any change) */
-      updatedAfter?: Date;
-      updatedBefore?: Date;
-      limit?: number;
-    } = {},
+    opts: QueryTicketsOpts = {},
   ): Promise<Entity[]> {
     const supabase = getSupabaseClient();
-    const category = opts.statusCategory ?? "open";
 
     let query = supabase
       .from("entities")
@@ -302,78 +388,113 @@ export const EntityRepository = {
       .order("external_updated_at", { ascending: false })
       .limit(opts.limit ?? 20);
 
-    if (category === "open") {
-      // Single source of truth for what "open" means — see linear.constants.ts.
-      query = query.in("state->>status", [...LINEAR_OPEN_STATUS_TYPES]);
-    } else if (category === "closed") {
-      query = query.eq("state->>status", "completed");
-    } else if (category === "cancelled") {
-      query = query.eq("state->>status", "cancelled");
-    }
-    // 'any' → no status filter
-
-    if (opts.assigneeId) {
-      query = query.eq("state->>assignee_id", opts.assigneeId);
-    }
-    if (opts.assigneeName) {
-      // Word-boundary match — anchor to start-of-string OR space before/after
-      // the needle. "ron" will match "Ron", "Ron Sunil", but NOT "Aaron" or
-      // "Byron". Uses four patterns in an OR so the expression index on
-      // LOWER(state->>'assignee_name') can help.
-      //
-      // Strict sanitization: Supabase's .or() uses `,` and `.` as DSL
-      // separators. Anything outside [A-Za-z0-9 _-] is stripped to prevent
-      // a crafted assignee name from extending the OR clause. If sanitization
-      // empties the string, the filter is skipped rather than run unsafely.
-      const n = opts.assigneeName.replace(/[^A-Za-z0-9 _-]/g, "").trim();
-      if (n.length > 0) {
-        query = query.or(
-          [
-            `state->>assignee_name.ilike.${n}`,
-            `state->>assignee_name.ilike.${n} %`,
-            `state->>assignee_name.ilike.% ${n}`,
-            `state->>assignee_name.ilike.% ${n} %`,
-          ].join(","),
-        );
-      }
-    }
-    if (opts.priority !== undefined) {
-      query = query.eq("state->>priority", String(opts.priority));
-    }
-    if (opts.cycleId) {
-      query = query.eq("state->>cycle_id", opts.cycleId);
-    }
-    if (opts.teamKey) {
-      query = query.eq("state->>team_key", opts.teamKey);
-    }
-    if (opts.completedAfter) {
-      query = query.gte(
-        "state->>completed_at",
-        opts.completedAfter.toISOString(),
-      );
-    }
-    if (opts.completedBefore) {
-      query = query.lte(
-        "state->>completed_at",
-        opts.completedBefore.toISOString(),
-      );
-    }
-    if (opts.updatedAfter) {
-      query = query.gte(
-        "external_updated_at",
-        opts.updatedAfter.toISOString(),
-      );
-    }
-    if (opts.updatedBefore) {
-      query = query.lte(
-        "external_updated_at",
-        opts.updatedBefore.toISOString(),
-      );
-    }
+    query = applyTicketFilters(query, opts);
 
     const { data, error } = await query;
     if (error) {
       throw new AppError(`Failed to query entities: ${error.message}`, 500);
+    }
+    return (data ?? []).map(mapEntityRow);
+  },
+
+  // ─── Aggregation queries ─────────────────
+
+  /**
+   * COUNT(*) with the same filter set as queryTickets. Uses head+count mode so
+   * we never pull the rows — just the number.
+   */
+  async countTickets(
+    workspaceId: string,
+    opts: QueryTicketsOpts = {},
+  ): Promise<number> {
+    const supabase = getSupabaseClient();
+
+    let query = supabase
+      .from("entities")
+      .select("id", { count: "exact", head: true })
+      .eq("workspace_id", workspaceId)
+      .eq("type", "linear_ticket");
+
+    query = applyTicketFilters(query, opts);
+
+    const { count, error } = await query;
+    if (error) {
+      throw new AppError(`Count failed: ${error.message}`, 500);
+    }
+    return count ?? 0;
+  },
+
+  /**
+   * GROUP BY <field> + COUNT. Returns a map of bucket → count. Uses a stored
+   * procedure because Supabase's JS client can't express jsonb-keyed GROUP BY
+   * cleanly.
+   */
+  async groupTicketsByStateField(
+    workspaceId: string,
+    field:
+      | "assignee_name"
+      | "status_name"
+      | "priority_label"
+      | "team_key"
+      | "project_name",
+    opts: QueryTicketsOpts = {},
+  ): Promise<Array<{ bucket: string; count: number }>> {
+    const supabase = getSupabaseClient();
+    // Fetch filtered rows (only the one JSONB key we care about) and group
+    // client-side. Faster than a round-trip RPC for the typical workspace
+    // size. If performance matters on 100k+ tickets, migrate to an RPC.
+    let query = supabase
+      .from("entities")
+      .select(`bucket:state->>${field}`)
+      .eq("workspace_id", workspaceId)
+      .eq("type", "linear_ticket")
+      .limit(10_000);
+
+    query = applyTicketFilters(query, opts);
+
+    const { data, error } = await query;
+    if (error) {
+      throw new AppError(`Group-by failed: ${error.message}`, 500);
+    }
+
+    const counts = new Map<string, number>();
+    // Select uses the alias `bucket:state->>field`, so row.bucket is the value.
+    for (const row of (data ?? []) as Array<{ bucket: string | null }>) {
+      const raw = row.bucket;
+      const key = raw == null || raw === "" ? "(unassigned)" : String(raw);
+      counts.set(key, (counts.get(key) ?? 0) + 1);
+    }
+    return Array.from(counts.entries())
+      .map(([bucket, count]) => ({ bucket, count }))
+      .sort((a, b) => b.count - a.count);
+  },
+
+  /**
+   * Oldest-first or newest-first with all the same filters as queryTickets.
+   */
+  async queryTicketsSorted(
+    workspaceId: string,
+    order: "oldest" | "newest",
+    opts: QueryTicketsOpts = {},
+  ): Promise<Entity[]> {
+    const supabase = getSupabaseClient();
+
+    let query = supabase
+      .from("entities")
+      .select()
+      .eq("workspace_id", workspaceId)
+      .eq("type", "linear_ticket")
+      .order("external_created_at", { ascending: order === "oldest" })
+      .limit(opts.limit ?? 5);
+
+    // Every filter applies — assignee (name/email/id), priority, team, cycle,
+    // labels, completion range, update range. Previously this method silently
+    // dropped most of them and returned wrong rows.
+    query = applyTicketFilters(query, opts);
+
+    const { data, error } = await query;
+    if (error) {
+      throw new AppError(`Sort query failed: ${error.message}`, 500);
     }
     return (data ?? []).map(mapEntityRow);
   },

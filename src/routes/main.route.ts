@@ -7,7 +7,7 @@ import { authRouter } from "./auth.route";
 import { telegramRouter } from "./telegram.route";
 import { workspaceRouter } from "./workspace.route";
 import { integrationRouter } from "./integration.route";
-import { linearAuthRouter, linearWebhookRouter } from "./linear.route";
+import { linearAuthRouter, linearPublicRouter } from "./linear.route";
 
 const mainRouter = Router();
 
@@ -16,7 +16,7 @@ mainRouter.use("/brain", brainRouter);
 mainRouter.use("/import", importRouter);
 mainRouter.use("/auth", authRouter);
 mainRouter.use("/telegram", telegramRouter);
-mainRouter.use("/linear", linearWebhookRouter);
+mainRouter.use("/linear", linearPublicRouter);
 mainRouter.use("/integrations/linear", linearAuthRouter);
 mainRouter.use("/workspaces", workspaceRouter);
 mainRouter.use("/workspaces/:workspaceId/integrations", integrationRouter);
