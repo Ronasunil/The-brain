@@ -3,7 +3,7 @@ import { app } from "./app";
 import { env } from "./config/env";
 import { EmbeddingWorker } from "./services/embedding.worker";
 import { LinearService } from "./services/linear.service";
-import { AggregationService } from "./services/aggregation.service";
+import { QueryPlanService } from "./services/query-plan.service";
 import { TicketIntentService } from "./services/ticket-intent.service";
 import { TicketCreationService } from "./services/ticket-creation.service";
 import { GitHubSyncWorker } from "./services/github-sync.worker";
@@ -42,8 +42,8 @@ httpServer.listen(PORT, () => {
     console.error("Linear event-queue drain failed:", err?.message ?? err);
   });
 
-  // ─── Warm up Gemini so the first classifier call doesn't cold-start ─
-  AggregationService.warmUp().catch(() => {
+  // ─── Warm up Gemini so the first real question doesn't cold-start ─
+  QueryPlanService.warmUp().catch(() => {
     /* opportunistic — never blocks */
   });
   TicketIntentService.warmUp().catch(() => {

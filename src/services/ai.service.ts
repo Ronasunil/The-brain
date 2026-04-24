@@ -3,10 +3,6 @@ import { getAIProvider } from "../providers";
 import { SYSTEM_PROMPT } from "../lib/constants/app.constants";
 import { SearchResult, CodeSearchResult, Entity } from "../lib/types";
 import { RerankOptions, RerankResult } from "../lib/types/ai.types";
-import {
-  AggregationFilters,
-  AggregationOperation,
-} from "../lib/types/aggregation.types";
 
 function sanitizeForPrompt(text: string): string {
   return text
@@ -18,39 +14,28 @@ function sanitizeForPrompt(text: string): string {
 /**
  * Deterministic structured-query context passed to the synthesizer.
  *
- * Populated by `BrainService.ask` when a SQL aggregation produced rows,
- * counts, or group buckets. The LLM treats this as the AUTHORITATIVE
- * source for numeric answers (counts, lists of matching tickets) and
- * uses the general context pool only to enrich or explain.
+ * Populated by `BrainService.ask` when a SQL query produced rows, a count,
+ * or group buckets. The LLM treats this as the AUTHORITATIVE source for
+ * numeric answers and row listings; the general context pool (semantic
+ * hits) only enriches.
  *
  * All fields are optional — empty means "SQL had nothing to say."
  */
 export interface AggregationContext {
-  operation?: AggregationOperation;
-  filters?: AggregationFilters;
-  /** Exact row count for `count` / `count_by` operations. */
+  operation?: "count" | "count_by" | "list";
+  /** Exact row count for `count` operations. */
   count?: number;
-  /** Ticket rows for `list` / `oldest` / `newest`. */
+  /** Ticket rows for `list` operations. */
   rows?: Entity[];
-  /** Group-by buckets for `count_by`. */
+  /** Group-by buckets for `count_by` operations. */
   buckets?: Array<{ bucket: string; count: number }>;
 }
 
 function buildAggregationBlock(ctx: AggregationContext | undefined): string {
   if (!ctx) return "";
 
-  const parts: string[] = [];
-  if (ctx.operation) parts.push(`operation: ${ctx.operation}`);
-  if (ctx.filters) {
-    const active = Object.entries(ctx.filters)
-      .filter(([, v]) => v != null && (Array.isArray(v) ? v.length > 0 : true))
-      .map(([k, v]) => `${k}=${JSON.stringify(v)}`)
-      .join(", ");
-    if (active) parts.push(`filters: ${active}`);
-  }
-
   const lines: string[] = [];
-  lines.push(`[filter summary: ${parts.join(" | ") || "none"}]`);
+  if (ctx.operation) lines.push(`Operation: ${ctx.operation}`);
 
   if (typeof ctx.count === "number") {
     lines.push(`Matching row count: ${ctx.count}`);

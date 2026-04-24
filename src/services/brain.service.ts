@@ -5,8 +5,12 @@ import {
 } from "../db/entity.repository";
 import { CodeChunkRepository } from "../db/code-chunk.repository";
 import { AIService, AggregationContext } from "./ai.service";
-import { AggregationService } from "./aggregation.service";
-import { QueryService } from "./query.service";
+import { QueryPlanService } from "./query-plan.service";
+import {
+  executePlan,
+  PlanExecutionResult,
+} from "../db/query-plan.executor";
+import { QueryPlan } from "../lib/types/query-plan.types";
 import { classifyQuestion } from "./query-router";
 import {
   mergeAndRerank,
@@ -22,12 +26,6 @@ import {
 } from "../lib/types";
 import { EntitySearchResult } from "../lib/types/entity.types";
 import {
-  AggregationIntent,
-  AggregationIntentAggregation,
-  RetrievalMode,
-} from "../lib/types/aggregation.types";
-import { env } from "../config/env";
-import {
   MAX_SEARCH_RESULTS,
   MIN_SIMILARITY_THRESHOLD,
   RERANK_INITIAL_FETCH,
@@ -39,56 +37,22 @@ import {
 /**
  * Brain Service — unified orchestrator for every @brain question.
  *
- * Replaces the old binary "aggregation OR content" router in
- * QueryService.ask. Every question goes through classify → optional
- * structured SQL → semantic retrieval (if hint says so) → merge → LLM
- * synthesizer with grounding over BOTH structured rows and semantic
- * snippets.
+ * Flow:
+ *   1. Ticket-ID short-circuit. "BRA-7" → direct PK lookup.
+ *   2. Parallel: SQL generation (Gemini Pro) + question embedding.
+ *   3. If the generator emitted SQL → validate + execute → rows are the
+ *      structural answer.
+ *   4. In parallel with SQL, fire the 8-source semantic retrieval. This
+ *      always runs so the synthesizer has narrative context.
+ *   5. Merge + rerank semantic hits.
+ *   6. Synthesize a grounded natural-language answer from SQL rows +
+ *      semantic snippets. The LLM is told to trust SQL numbers as
+ *      authoritative and never invent IDs/counts.
  *
- * Rollback: set BRAIN_PIPELINE=legacy to bypass this and fall through to
- * the original QueryService.ask. See PRD-hybrid-synthesizer-2026-04-24.md.
+ * There is ONE happy path. If Gemini isn't configured or the SQL path
+ * fails, the synthesizer writes from semantic context alone. No mode
+ * flags, no legacy fallbacks — just a single pipeline.
  */
-
-type Timings = {
-  classify?: number;
-  embed?: number;
-  sql?: number;
-  retrieve?: number;
-  rerank?: number;
-  synth?: number;
-};
-
-function now(): number {
-  return Date.now();
-}
-
-function resolveMode(_intent: AggregationIntent): RetrievalMode {
-  // TESTING MODE — every question is forced through the full hybrid path
-  // (SQL + all semantic sources + synthesizer) so we can validate behaviour
-  // across the board. Flip back to the hint-driven logic below when we're
-  // ready to tune per-question cost/latency.
-  //
-  // Restore by uncommenting:
-  //   const hint = _intent.retrieval_hint?.mode;
-  //   if (hint) return hint;
-  //   return _intent.intent === "aggregation" ? "sql_dominant" : "semantic_dominant";
-  return "balanced";
-}
-
-function shouldRunSql(intent: AggregationIntent, mode: RetrievalMode): boolean {
-  if (intent.intent !== "aggregation") return false;
-  return mode !== "semantic_dominant";
-}
-
-function shouldRunMessages(mode: RetrievalMode): boolean {
-  return mode !== "sql_only";
-}
-
-function shouldRunEntitiesAndCode(mode: RetrievalMode): boolean {
-  // sql_dominant: skip — SQL already covers tickets; messages add the
-  // "what did the team say" color.
-  return mode === "balanced" || mode === "semantic_dominant";
-}
 
 export const BrainService = {
   async ask(
@@ -96,17 +60,9 @@ export const BrainService = {
     workspaceId: string,
     integrationId?: string,
   ): Promise<BrainAnswer> {
-    // Rollback switch — kept so BRAIN_PIPELINE=legacy falls through to the
-    // pre-refactor pipeline with zero code changes.
-    if (env.BRAIN_PIPELINE === "legacy") {
-      return QueryService.ask(question, workspaceId, integrationId);
-    }
+    const t0 = Date.now();
 
-    const t0 = now();
-    const timings: Timings = {};
-
-    // 0. Ticket-ID short-circuit. "BRA-7" → direct PK lookup, skip
-    //    classifier + embedding entirely.
+    // 1. Ticket-ID short-circuit.
     const { klass, hints } = classifyQuestion(question);
     if (klass === "structural" && hints.ticketId) {
       const externalId = `${hints.ticketId.teamKey}-${hints.ticketId.number}`;
@@ -116,281 +72,404 @@ export const BrainService = {
       );
       if (direct) {
         logBrain({
-          mode: "ticket_id",
-          sources: { sql: 1 },
+          path: "ticket_id",
+          rowCount: 1,
+          semanticHits: 0,
           synth: "skip",
-          latency: now() - t0,
+          elapsedMs: Date.now() - t0,
         });
         return ticketLookupAnswer(direct);
       }
-      // Fall through to hybrid path on miss (typo / unknown team key).
+      // Fall through on miss (typo / unknown team key).
     }
 
-    // 1. Parallel: classify + embedding. Both are ~400ms independent I/O.
-    const tClassifyStart = now();
-    const [intent, queryEmbedding] = await Promise.all([
-      AggregationService.classify(question),
-      AIService.createEmbedding(question),
-    ]);
-    timings.classify = now() - tClassifyStart;
-    timings.embed = timings.classify;
+    // 2. Ask the LLM: is this a structured query or a content question?
+    //    The plan is either a Supabase query shape (structured) or null
+    //    (content). We trust that decision — no parallel "always run
+    //    both" balanced mode.
+    const planGen = await QueryPlanService.generate(question);
 
-    const mode = resolveMode(intent);
-
-    // Dynamic similarity threshold — short questions need relaxed threshold.
-    const wordCount = question.trim().split(/\s+/).length;
-    const similarityThreshold =
-      wordCount <= 3
-        ? Math.min(MIN_SIMILARITY_THRESHOLD, 0.15)
-        : MIN_SIMILARITY_THRESHOLD;
-
-    // 2. SQL gather (if aggregation intent and hint allows).
-    const aggIntent =
-      intent.intent === "aggregation"
-        ? (intent as AggregationIntentAggregation)
-        : null;
-
-    let aggregationCtx: AggregationContext | undefined;
-    let sqlRows: Entity[] | undefined;
-    if (aggIntent && shouldRunSql(aggIntent, mode)) {
-      const tSqlStart = now();
-      try {
-        const gathered = await AggregationService.gather(aggIntent, workspaceId);
-        timings.sql = now() - tSqlStart;
-        if (gathered) {
-          aggregationCtx = gathered;
-          sqlRows = gathered.rows;
-        }
-      } catch (err) {
-        // Never fail the whole query because SQL misfired — fall through
-        // to semantic-only and let the synthesizer work with what it has.
-        console.warn(
-          "BrainService: AggregationService.gather failed:",
-          (err as Error)?.message ?? err,
-        );
-      }
-    }
-
-    // 3. Fast path — pure SQL with no semantic enrichment needed.
-    if (aggIntent && mode === "sql_only") {
-      // Use the existing formatted path (templates + deterministic formatter).
-      // This keeps pure-count questions cheap and deterministic.
-      const answer = await AggregationService.execute(aggIntent, workspaceId);
-      logBrain({
-        mode,
-        sources: { sql: aggregationCtx?.count ?? (sqlRows?.length ?? 0) },
-        synth: "skip",
-        latency: now() - t0,
-      });
-      return answer;
-    }
-
-    // 4. Semantic retrieval — parallel across the sources the hint asked for.
-    const tRetrieveStart = now();
-    const fetchCount = AIService.supportsRerank()
-      ? RERANK_INITIAL_FETCH
-      : MAX_SEARCH_RESULTS;
-
-    const messagesEnabled = shouldRunMessages(mode);
-    const entitiesEnabled = shouldRunEntitiesAndCode(mode);
-
-    const [
-      manualResults,
-      messagesCosine,
-      messagesFullText,
-      entityCosine,
-      entityFullText,
-      commentResults,
-      codeCosine,
-      codeFullText,
-    ] = await Promise.all([
-      messagesEnabled
-        ? MessageRepository.searchManual(
-            workspaceId,
-            queryEmbedding,
-            MANUAL_RESERVED_SLOTS,
-            similarityThreshold,
-            integrationId,
-          )
-        : Promise.resolve([] as SearchResult[]),
-      messagesEnabled
-        ? MessageRepository.searchSimilar(
-            queryEmbedding,
-            workspaceId,
-            fetchCount,
-            similarityThreshold,
-            integrationId,
-          )
-        : Promise.resolve([] as SearchResult[]),
-      messagesEnabled
-        ? MessageRepository.searchFullText(
-            question,
-            workspaceId,
-            FULLTEXT_SEARCH_LIMIT,
-            integrationId,
-          )
-        : Promise.resolve([] as SearchResult[]),
-      entitiesEnabled
-        ? EntityRepository.searchSimilar(
-            queryEmbedding,
-            workspaceId,
-            fetchCount,
-            similarityThreshold,
-            integrationId,
-          )
-        : Promise.resolve([] as EntitySearchResult[]),
-      entitiesEnabled
-        ? EntityRepository.searchFullText(
-            question,
-            workspaceId,
-            FULLTEXT_SEARCH_LIMIT,
-            integrationId,
-          )
-        : Promise.resolve([] as EntitySearchResult[]),
-      entitiesEnabled
-        ? EntityCommentRepository.searchSimilar(
-            queryEmbedding,
-            workspaceId,
-            fetchCount,
-            similarityThreshold,
-          )
-        : Promise.resolve(
-            [] as Array<{
-              comment: {
-                id: string;
-                entity_id: string;
-                workspace_id: string;
-                author_id: string;
-                author_name: string;
-                content: string;
-                external_created_at: Date;
-              };
-              similarity: number;
-            }>,
-          ),
-      entitiesEnabled
-        ? CodeChunkRepository.searchSimilar(
-            queryEmbedding,
-            workspaceId,
-            fetchCount,
-            similarityThreshold,
-            integrationId,
-          )
-        : Promise.resolve([] as CodeSearchResult[]),
-      entitiesEnabled
-        ? CodeChunkRepository.searchFullText(
-            question,
-            workspaceId,
-            FULLTEXT_SEARCH_LIMIT,
-            integrationId,
-          )
-        : Promise.resolve([] as CodeSearchResult[]),
-    ]);
-    timings.retrieve = now() - tRetrieveStart;
-
-    // 5. Per-source merge (cosine + FTS within each source).
-    const mergedMessages = mergeByMessageId(messagesCosine, messagesFullText);
-    const entityResults = await resolveEntitiesAndComments(
-      entityCosine,
-      entityFullText,
-      commentResults,
-    );
-    const mergedCode = mergeByChunkId(codeCosine, codeFullText);
-
-    // 6. Cross-source rerank + dedupe against manual slots.
-    const tRerankStart = now();
-    const merged = await mergeAndRerank(question, {
-      manualResults,
-      messages: mergedMessages,
-      entities: entityResults,
-      code: mergedCode,
-    });
-    timings.rerank = now() - tRerankStart;
-
-    // 7. Synthesize.
-    const searchResults: SearchResult[] = [
-      ...merged.manualResults,
-      ...merged.ranked
-        .filter((u) => u.origin === "message" && u.messageResult)
-        .map((u) => u.messageResult as SearchResult),
-    ];
-    const codeResults: CodeSearchResult[] = merged.ranked
-      .filter((u) => u.origin === "code" && u.codeResult)
-      .map((u) => u.codeResult as CodeSearchResult);
-
-    const tSynthStart = now();
-    let synthStatus: "ok" | "fallback_templates" | "fallback_formatter" | "error" =
-      "ok";
-    let answerText: string;
-    try {
-      answerText = await AIService.generateAnswer(
+    if (planGen.plan) {
+      // ─── SQL path: run the plan, synthesize from its rows + manual facts.
+      return runPlanPath(
+        planGen.plan,
         question,
-        searchResults,
-        merged.manualResults.length > 0 ? merged.manualResults : undefined,
-        codeResults.length > 0 ? codeResults : undefined,
-        aggregationCtx,
+        workspaceId,
+        integrationId,
+        t0,
       );
-    } catch (err) {
-      console.warn(
-        "BrainService: synthesizer failed, falling back:",
-        (err as Error)?.message ?? err,
-      );
-      synthStatus = "error";
-      // Fallback chain: if we have an aggregation intent, let templates/
-      // deterministic formatter answer. Otherwise use a human fallback.
-      if (aggIntent) {
-        const formatted = await AggregationService.execute(
-          aggIntent,
-          workspaceId,
-        );
-        synthStatus = "fallback_templates";
-        logBrain({
-          mode,
-          sources: sourceCounts(
-            merged,
-            aggregationCtx,
-            searchResults,
-            codeResults,
-          ),
-          synth: synthStatus,
-          latency: now() - t0,
-        });
-        return formatted;
-      }
-      answerText =
-        "I couldn't answer that right now. Try rephrasing or check back in a moment.";
     }
-    timings.synth = now() - tSynthStart;
 
-    // 8. Build sources list for the chat UI.
-    const sources = buildSources(merged.manualResults, merged.ranked);
-
-    logBrain({
-      mode,
-      sources: sourceCounts(merged, aggregationCtx, searchResults, codeResults),
-      synth: synthStatus,
-      latency: now() - t0,
-      timings,
-    });
-
-    return { answer: answerText, sources };
+    // ─── Semantic path: embedding + hybrid retrieval + synthesizer.
+    return runSemanticPath(question, workspaceId, integrationId, t0);
   },
 };
 
-// ─── Helpers ─────────────────────────────────────
+// ─── SQL path ───────────────────────────────────
 
-function mergeByMessageId(
+/**
+ * Fetch the workspace's manually-remembered "ground truth" facts and
+ * rank them against the question. These are user-curated context
+ * (things like "rona is on leave this week") that must apply on BOTH
+ * the SQL and semantic paths — dropping them on one path leads to
+ * answers that ignore known context.
+ *
+ * Cheap: 3 reserved slots via a single RPC; costs an extra embedding.
+ */
+async function fetchManualFacts(
+  question: string,
+  workspaceId: string,
+  integrationId: string | undefined,
+): Promise<SearchResult[]> {
+  try {
+    const embedding = await AIService.createEmbedding(question);
+    return MessageRepository.searchManual(
+      workspaceId,
+      embedding,
+      MANUAL_RESERVED_SLOTS,
+      MIN_SIMILARITY_THRESHOLD,
+      integrationId,
+    );
+  } catch (err) {
+    // Manual facts are best-effort — never block the answer on their
+    // retrieval. Log and return empty.
+    const msg = err instanceof Error ? err.message : String(err);
+    console.warn(`⚠️  fetchManualFacts failed, continuing without: ${msg}`);
+    return [];
+  }
+}
+
+async function runPlanPath(
+  plan: QueryPlan,
+  question: string,
+  workspaceId: string,
+  integrationId: string | undefined,
+  t0: number,
+): Promise<BrainAnswer> {
+  // Log what's actually going to run (server-side tenant scope injected
+  // by executor, so you know workspace_id + type='linear_ticket' are
+  // always enforced regardless of what the LLM wrote).
+  console.log(
+    `🛡️  plan-validated (workspace=${workspaceId}, table=${plan.table})`,
+  );
+  console.log(`   ↳ SELECT: ${plan.select}`);
+  if (plan.filters.length > 0) {
+    console.log(`   ↳ FILTERS: ${JSON.stringify(plan.filters)}`);
+  }
+  if (plan.order_by)
+    console.log(`   ↳ ORDER BY: ${JSON.stringify(plan.order_by)}`);
+  if (plan.limit) console.log(`   ↳ LIMIT: ${plan.limit}`);
+  if (plan.group_by) console.log(`   ↳ GROUP BY: ${plan.group_by}`);
+
+  // Plan execution can fail if: the LLM emitted a nonexistent column, the DB
+  // times out, Supabase throttles, or a filter op is malformed. In all those
+  // cases, graceful degradation is better than a generic error — fall
+  // through to the semantic path so the user still gets an answer.
+  let result: PlanExecutionResult;
+  try {
+    result = await executePlan(plan, workspaceId);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.warn(
+      `⚠️  plan execution failed, falling through to semantic: ${msg}`,
+    );
+    return runSemanticPath(question, workspaceId, integrationId, t0);
+  }
+
+  console.log(
+    `🗄️  plan:executed ${result.summary} elapsed=${result.elapsedMs}ms`,
+  );
+  if (result.rows.length > 0 && result.rows.length <= 10) {
+    console.log(`   ↳ ROWS: ${JSON.stringify(result.rows, null, 0)}`);
+  }
+  if (result.buckets && result.buckets.length > 0) {
+    console.log(`   ↳ BUCKETS: ${JSON.stringify(result.buckets)}`);
+  }
+
+  const aggregationCtx = buildAggregationContext(result);
+
+  // Manual-remembered facts always apply (they're user-stored context,
+  // not retrieval noise). Cheap — 3 reserved slots, single RPC. Passing
+  // them on both paths prevents silent-blindspot bugs like "answer
+  // ignored the 'rona is on leave' fact the user stored last week".
+  const manualFacts = await fetchManualFacts(
+    question,
+    workspaceId,
+    integrationId,
+  );
+
+  // Synthesize using the SQL rows + manual facts. No broader semantic
+  // retrieval on this path — the LLM routed to SQL; trust that.
+  let answerText: string;
+  let synthStatus: "ok" | "error" = "ok";
+  try {
+    answerText = await AIService.generateAnswer(
+      question,
+      /* searchResults */ [],
+      manualFacts.length > 0 ? manualFacts : undefined,
+      /* codeResults */ undefined,
+      aggregationCtx,
+    );
+  } catch (err) {
+    synthStatus = "error";
+    const msg = err instanceof Error ? err.message : String(err);
+    console.warn(`⚠️  synthesizer failed: ${msg}`);
+    answerText =
+      "I couldn't answer that right now. Try rephrasing or check back in a moment.";
+  }
+
+  const sources = buildSqlSources(result.rows);
+
+  logBrain({
+    path: "sql",
+    rowCount: result.rows.length,
+    bucketCount: result.buckets?.length,
+    semanticHits: manualFacts.length,
+    synth: synthStatus,
+    elapsedMs: Date.now() - t0,
+  });
+
+  return { answer: answerText, sources };
+}
+
+/**
+ * Rows from the plan → AggregationContext shape the synthesizer already
+ * understands. Three cases:
+ *   - group_by buckets present → count_by
+ *   - rows present              → list (synthesizer counts rows itself)
+ *   - empty                     → count=0 so the synthesizer says "none"
+ */
+function buildAggregationContext(
+  result: PlanExecutionResult,
+): AggregationContext {
+  if (result.buckets && result.buckets.length > 0) {
+    return { operation: "count_by", buckets: result.buckets };
+  }
+  if (result.rows.length > 0) {
+    return {
+      operation: "list",
+      rows: result.rows.map(rowToEntityLike),
+    };
+  }
+  return { operation: "count", count: 0 };
+}
+
+function buildSqlSources(
+  rows: Record<string, unknown>[],
+): BrainAnswerSource[] {
+  return rows.slice(0, 20).map((row) => {
+    const state = (row.state as Record<string, unknown>) ?? {};
+    const assignee =
+      (state.assignee_name as string | undefined) ?? "unassigned";
+    const title = String(row.title ?? state.title ?? "");
+    return {
+      content: title,
+      user_name: assignee,
+      source: "linear" as const,
+      timestamp: row.external_updated_at
+        ? new Date(String(row.external_updated_at))
+        : new Date(),
+      similarity: 1.0,
+    };
+  });
+}
+
+function rowToEntityLike(row: Record<string, unknown>): Entity {
+  const now = new Date();
+  return {
+    id: String(row.id ?? ""),
+    workspace_id: String(row.workspace_id ?? ""),
+    integration_id: String(row.integration_id ?? ""),
+    type: "linear_ticket",
+    external_id: String(row.external_id ?? "?"),
+    external_url: String(row.external_url ?? ""),
+    title: String(row.title ?? ""),
+    body: String(row.body ?? ""),
+    state: (row.state as Record<string, unknown>) ?? row,
+    participants: [],
+    content_hash: "",
+    external_created_at: row.external_created_at
+      ? new Date(String(row.external_created_at))
+      : now,
+    external_updated_at: row.external_updated_at
+      ? new Date(String(row.external_updated_at))
+      : now,
+    embedding: null,
+    created_at: now,
+    updated_at: now,
+  };
+}
+
+// ─── Semantic path ──────────────────────────────
+
+async function runSemanticPath(
+  question: string,
+  workspaceId: string,
+  integrationId: string | undefined,
+  t0: number,
+): Promise<BrainAnswer> {
+  const queryEmbedding = await AIService.createEmbedding(question);
+  const semantic = await runSemanticRetrieval(
+    question,
+    queryEmbedding,
+    workspaceId,
+    integrationId,
+  );
+
+  const merged = await mergeAndRerank(question, {
+    manualResults: semantic.manualResults,
+    messages: semantic.messages,
+    entities: semantic.entities,
+    code: semantic.code,
+  });
+
+  const searchResults: SearchResult[] = [
+    ...merged.manualResults,
+    ...merged.ranked
+      .filter((u) => u.origin === "message" && u.messageResult)
+      .map((u) => u.messageResult as SearchResult),
+  ];
+  const codeResults: CodeSearchResult[] = merged.ranked
+    .filter((u) => u.origin === "code" && u.codeResult)
+    .map((u) => u.codeResult as CodeSearchResult);
+
+  let answerText: string;
+  let synthStatus: "ok" | "error" = "ok";
+  try {
+    answerText = await AIService.generateAnswer(
+      question,
+      searchResults,
+      merged.manualResults.length > 0 ? merged.manualResults : undefined,
+      codeResults.length > 0 ? codeResults : undefined,
+      /* aggregationCtx */ undefined,
+    );
+  } catch (err) {
+    synthStatus = "error";
+    const msg = err instanceof Error ? err.message : String(err);
+    console.warn(`⚠️  synthesizer failed: ${msg}`);
+    answerText =
+      "I couldn't answer that right now. Try rephrasing or check back in a moment.";
+  }
+
+  logBrain({
+    path: "semantic",
+    rowCount: 0,
+    semanticHits: searchResults.length + codeResults.length,
+    synth: synthStatus,
+    elapsedMs: Date.now() - t0,
+  });
+
+  return {
+    answer: answerText,
+    sources: buildSources(merged.manualResults, merged.ranked),
+  };
+}
+
+interface SemanticResults {
+  manualResults: SearchResult[];
+  messages: SearchResult[];
+  entities: SearchResult[];
+  code: CodeSearchResult[];
+}
+
+async function runSemanticRetrieval(
+  question: string,
+  queryEmbedding: number[],
+  workspaceId: string,
+  integrationId: string | undefined,
+): Promise<SemanticResults> {
+  const fetchCount = AIService.supportsRerank()
+    ? RERANK_INITIAL_FETCH
+    : MAX_SEARCH_RESULTS;
+
+  const wordCount = question.trim().split(/\s+/).length;
+  const similarityThreshold =
+    wordCount <= 3
+      ? Math.min(MIN_SIMILARITY_THRESHOLD, 0.15)
+      : MIN_SIMILARITY_THRESHOLD;
+
+  const [
+    manualResults,
+    messagesCosine,
+    messagesFullText,
+    entityCosine,
+    entityFullText,
+    commentResults,
+    codeCosine,
+    codeFullText,
+  ] = await Promise.all([
+    MessageRepository.searchManual(
+      workspaceId,
+      queryEmbedding,
+      MANUAL_RESERVED_SLOTS,
+      similarityThreshold,
+      integrationId,
+    ),
+    MessageRepository.searchSimilar(
+      queryEmbedding,
+      workspaceId,
+      fetchCount,
+      similarityThreshold,
+      integrationId,
+    ),
+    MessageRepository.searchFullText(
+      question,
+      workspaceId,
+      FULLTEXT_SEARCH_LIMIT,
+      integrationId,
+    ),
+    EntityRepository.searchSimilar(
+      queryEmbedding,
+      workspaceId,
+      fetchCount,
+      similarityThreshold,
+      integrationId,
+    ),
+    EntityRepository.searchFullText(
+      question,
+      workspaceId,
+      FULLTEXT_SEARCH_LIMIT,
+      integrationId,
+    ),
+    EntityCommentRepository.searchSimilar(
+      queryEmbedding,
+      workspaceId,
+      fetchCount,
+      similarityThreshold,
+    ),
+    CodeChunkRepository.searchSimilar(
+      queryEmbedding,
+      workspaceId,
+      fetchCount,
+      similarityThreshold,
+      integrationId,
+    ),
+    CodeChunkRepository.searchFullText(
+      question,
+      workspaceId,
+      FULLTEXT_SEARCH_LIMIT,
+      integrationId,
+    ),
+  ]);
+
+  const messages = dedupeByMessageId(messagesCosine, messagesFullText);
+  const entities = await resolveEntitiesAndComments(
+    entityCosine,
+    entityFullText,
+    commentResults,
+  );
+  const code = dedupeByChunkId(codeCosine, codeFullText);
+
+  return { manualResults, messages, entities, code };
+}
+
+function dedupeByMessageId(
   a: SearchResult[],
   b: SearchResult[],
 ): SearchResult[] {
   const seen = new Set<string>();
   const out: SearchResult[] = [];
-  for (const r of a) {
-    if (seen.has(r.message.id)) continue;
-    seen.add(r.message.id);
-    out.push(r);
-  }
-  for (const r of b) {
+  for (const r of [...a, ...b]) {
     if (seen.has(r.message.id)) continue;
     seen.add(r.message.id);
     out.push(r);
@@ -398,18 +477,13 @@ function mergeByMessageId(
   return out;
 }
 
-function mergeByChunkId(
+function dedupeByChunkId(
   a: CodeSearchResult[],
   b: CodeSearchResult[],
 ): CodeSearchResult[] {
   const seen = new Set<string>();
   const out: CodeSearchResult[] = [];
-  for (const r of a) {
-    if (seen.has(r.chunk.id)) continue;
-    seen.add(r.chunk.id);
-    out.push(r);
-  }
-  for (const r of b) {
+  for (const r of [...a, ...b]) {
     if (seen.has(r.chunk.id)) continue;
     seen.add(r.chunk.id);
     out.push(r);
@@ -417,10 +491,7 @@ function mergeByChunkId(
   return out;
 }
 
-/**
- * Merge entity cosine + FTS hits, plus resolve comment parents so the LLM
- * sees "comment on BRA-7 — Setup google auth" instead of an orphan snippet.
- */
+/** Merge entity hits + resolve comment parents for "comment on BRA-7" context. */
 async function resolveEntitiesAndComments(
   entityCosine: EntitySearchResult[],
   entityFullText: EntitySearchResult[],
@@ -440,12 +511,7 @@ async function resolveEntitiesAndComments(
   const seen = new Set<string>();
   const out: SearchResult[] = [];
 
-  for (const r of entityCosine) {
-    if (seen.has(r.entity.id)) continue;
-    seen.add(r.entity.id);
-    out.push(entityToSearchResult(r));
-  }
-  for (const r of entityFullText) {
+  for (const r of [...entityCosine, ...entityFullText]) {
     if (seen.has(r.entity.id)) continue;
     seen.add(r.entity.id);
     out.push(entityToSearchResult(r));
@@ -453,7 +519,6 @@ async function resolveEntitiesAndComments(
 
   if (commentResults.length === 0) return out;
 
-  // Batch parent lookup — N comments on same entity → 1 lookup.
   const parentIds = Array.from(
     new Set(commentResults.map((r) => r.comment.entity_id)),
   );
@@ -461,10 +526,9 @@ async function resolveEntitiesAndComments(
     parentIds.map((id) => EntityRepository.findById(id)),
   );
   const parentById = new Map<string, { external_id: string; title: string }>();
-  parents.forEach((p) => {
-    if (p)
-      parentById.set(p.id, { external_id: p.external_id, title: p.title });
-  });
+  for (const p of parents) {
+    if (p) parentById.set(p.id, { external_id: p.external_id, title: p.title });
+  }
 
   for (const r of commentResults) {
     const key = `comment:${r.comment.id}`;
@@ -496,6 +560,8 @@ async function resolveEntitiesAndComments(
 
   return out;
 }
+
+// ─── Output builders ────────────────────────────
 
 function buildSources(
   manualResults: SearchResult[],
@@ -574,51 +640,19 @@ function ticketLookupAnswer(e: Entity): BrainAnswer {
 
 // ─── Observability ──────────────────────────────
 
-interface SourceCounts {
-  sql?: number;
-  msg?: number;
-  ent?: number;
-  com?: number;
-  code?: number;
-}
-
-function sourceCounts(
-  merged: { manualResults: SearchResult[]; ranked: UnifiedResult[] },
-  aggregationCtx: AggregationContext | undefined,
-  searchResults: SearchResult[],
-  codeResults: CodeSearchResult[],
-): SourceCounts {
-  const counts: SourceCounts = {};
-  if (aggregationCtx) {
-    counts.sql =
-      aggregationCtx.rows?.length ??
-      aggregationCtx.buckets?.length ??
-      aggregationCtx.count ??
-      0;
-  }
-  const msgCount = searchResults.length;
-  if (msgCount > 0) counts.msg = msgCount;
-  if (codeResults.length > 0) counts.code = codeResults.length;
-  return counts;
-}
-
 function logBrain(entry: {
-  mode: RetrievalMode | "ticket_id";
-  sources: SourceCounts;
-  synth: "ok" | "skip" | "fallback_templates" | "fallback_formatter" | "error";
-  latency: number;
-  timings?: Timings;
+  path: "ticket_id" | "sql" | "semantic";
+  rowCount: number;
+  bucketCount?: number;
+  semanticHits: number;
+  synth: "ok" | "skip" | "error";
+  elapsedMs: number;
 }): void {
-  const src = Object.entries(entry.sources)
-    .map(([k, v]) => `${k}:${v}`)
-    .join(", ");
-  const timing = entry.timings
-    ? ` timings=${Object.entries(entry.timings)
-        .filter(([, v]) => typeof v === "number")
-        .map(([k, v]) => `${k}:${v}ms`)
-        .join(",")}`
-    : "";
+  const bucketPart =
+    entry.bucketCount && entry.bucketCount > 0
+      ? ` buckets=${entry.bucketCount}`
+      : "";
   console.log(
-    `🧠 brain [hint=${entry.mode}] sources=[${src}] synth=${entry.synth} latency=${entry.latency}ms${timing}`,
+    `🧠 brain [path=${entry.path}] rows=${entry.rowCount}${bucketPart} semantic=${entry.semanticHits} synth=${entry.synth} total=${entry.elapsedMs}ms`,
   );
 }
