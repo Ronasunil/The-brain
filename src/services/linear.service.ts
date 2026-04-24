@@ -396,6 +396,14 @@ export const LinearService = {
   stopWorker(): void {
     shutdownRequested = true;
   },
+
+  /**
+   * Return a valid access token for the given integration. Handles auto-
+   * refresh when the token is within REFRESH_SKEW_MS of expiry. Exposed so
+   * features like TicketCreationService can hit Linear's GraphQL API without
+   * duplicating the decrypt+refresh plumbing.
+   */
+  getAccessToken,
 };
 
 // ─── Internal helpers ───────────────────────────

@@ -61,6 +61,27 @@ export interface LinearComment {
   user: LinearUserRef | null;
 }
 
+export interface LinearTeam {
+  id: string;
+  key: string;
+  name: string;
+}
+
+export interface LinearCreateIssueInput {
+  teamId: string;
+  title: string;
+  description?: string;
+  priority?: 0 | 1 | 2 | 3 | 4;
+  assigneeId?: string | null;
+}
+
+export interface LinearCreatedIssue {
+  id: string;
+  identifier: string;
+  url: string;
+  title: string;
+}
+
 export interface LinearIssue {
   id: string;
   identifier: string;
@@ -265,6 +286,47 @@ export const LinearProvider = {
       { id: identifier },
     );
     return data.issue;
+  },
+
+  async listTeams(accessToken: string): Promise<LinearTeam[]> {
+    const data = await graphql<{ teams: { nodes: LinearTeam[] } }>(
+      accessToken,
+      `query Teams { teams(first: 50) { nodes { id key name } } }`,
+    );
+    return data.teams.nodes;
+  },
+
+  async listWorkspaceUsers(accessToken: string): Promise<LinearUserRef[]> {
+    const data = await graphql<{ users: { nodes: LinearUserRef[] } }>(
+      accessToken,
+      `query Users {
+        users(first: 100, filter: { active: { eq: true } }) {
+          nodes { id name email }
+        }
+      }`,
+    );
+    return data.users.nodes;
+  },
+
+  async createIssue(
+    accessToken: string,
+    input: LinearCreateIssueInput,
+  ): Promise<LinearCreatedIssue> {
+    const mutation = `
+      mutation IssueCreate($input: IssueCreateInput!) {
+        issueCreate(input: $input) {
+          success
+          issue { id identifier url title }
+        }
+      }
+    `;
+    const data = await graphql<{
+      issueCreate: { success: boolean; issue: LinearCreatedIssue | null };
+    }>(accessToken, mutation, { input });
+    if (!data.issueCreate.success || !data.issueCreate.issue) {
+      throw new AppError("Linear rejected issueCreate", 502);
+    }
+    return data.issueCreate.issue;
   },
 
   async listIssuesPage(

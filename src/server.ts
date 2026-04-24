@@ -4,6 +4,8 @@ import { env } from "./config/env";
 import { EmbeddingWorker } from "./services/embedding.worker";
 import { LinearService } from "./services/linear.service";
 import { AggregationService } from "./services/aggregation.service";
+import { TicketIntentService } from "./services/ticket-intent.service";
+import { TicketCreationService } from "./services/ticket-creation.service";
 import { GitHubSyncWorker } from "./services/github-sync.worker";
 import { initSocketIO } from "./socket";
 
@@ -44,6 +46,13 @@ httpServer.listen(PORT, () => {
   AggregationService.warmUp().catch(() => {
     /* opportunistic — never blocks */
   });
+  TicketIntentService.warmUp().catch(() => {
+    /* opportunistic — never blocks */
+  });
+
+  // ─── Start the ticket-draft janitor (evicts idle in-memory drafts) ─
+  TicketCreationService.startJanitor();
+
   GitHubSyncWorker.start();
 });
 
@@ -52,6 +61,7 @@ process.on("SIGINT", () => {
   console.log("\n🛑 Shutting down OrgBrain...");
   EmbeddingWorker.stop();
   LinearService.stopWorker();
+  TicketCreationService.stopJanitor();
   GitHubSyncWorker.stop();
   process.exit(0);
 });
@@ -59,6 +69,7 @@ process.on("SIGINT", () => {
 process.on("SIGTERM", () => {
   EmbeddingWorker.stop();
   LinearService.stopWorker();
+  TicketCreationService.stopJanitor();
   GitHubSyncWorker.stop();
   process.exit(0);
 });

@@ -9,6 +9,10 @@ import { AuthRepository } from "./db/auth.repository";
 import { UserRepository } from "./db/user.repository";
 import { WorkspaceService } from "./services/workspace.service";
 import { ChatService } from "./services/chat.service";
+import { TicketCreationService } from "./services/ticket-creation.service";
+import { TicketIntentService } from "./services/ticket-intent.service";
+import { AppError } from "./lib/errors/app-error";
+import { ChatMessageRepository } from "./db/chat-message.repository";
 
 interface SocketData {
   user: UserResponse;
@@ -20,6 +24,12 @@ interface SocketData {
  */
 const BRAIN_TRIGGER = /(^|\s)@brain(?=\s|$|[.,!?;:])/i;
 
+/** Explicit prefix trigger for ticket creation. */
+const TICKET_TRIGGER = /^@ticket(?=\s|$)/i;
+
+/** Matches a standalone cancel / /cancel reply that aborts an in-flight draft. */
+const CANCEL_RE = /^\s*\/?cancel\s*$/i;
+
 function extractBrainQuestion(content: string): string | null {
   if (!BRAIN_TRIGGER.test(content)) return null;
   return (
@@ -28,6 +38,16 @@ function extractBrainQuestion(content: string): string | null {
       .replace(/\s+/g, " ")
       .trim() || null
   );
+}
+
+function extractTicketRequest(
+  content: string,
+): { title: string; description: string } | null {
+  if (!TICKET_TRIGGER.test(content)) return null;
+  const body = content.replace(TICKET_TRIGGER, "").trim();
+  if (!body) return null;
+  const firstLine = body.split(/\r?\n/)[0]?.trim() ?? body;
+  return { title: firstLine, description: body };
 }
 
 /**
@@ -72,6 +92,39 @@ async function authenticateSocket(
     phone: user.phone,
     created_at: user.created_at,
   };
+}
+
+/**
+ * Persist an error as a bot chat message and broadcast it. Converts AppError
+ * messages (user-friendly) directly; anything else becomes a generic line so
+ * we never leak stack traces into chat.
+ */
+async function emitBotError(
+  io: Server,
+  room: string,
+  workspaceId: string,
+  err: unknown,
+): Promise<void> {
+  const message =
+    err instanceof AppError
+      ? err.message
+      : "Something went wrong processing that. Please try again.";
+  if (!(err instanceof AppError)) {
+    console.error("⚠️ ticket flow unexpected error:", err);
+  }
+  try {
+    const bot = await ChatMessageRepository.create({
+      workspace_id: workspaceId,
+      user_id: null,
+      user_name: "ticket-bot",
+      role: "assistant",
+      content: message,
+      sources: null,
+    });
+    io.to(room).emit("chat:message", bot);
+  } catch (persistErr) {
+    console.error("⚠️ failed to persist bot error message:", persistErr);
+  }
 }
 
 function parseCookies(raw: string): Record<string, string> {
@@ -149,23 +202,87 @@ export function initSocketIO(httpServer: http.Server): Server {
 
         io.to(room).emit("chat:message", chatMsg);
 
-        // Check for @brain trigger
+        // 1. Cancel command short-circuits everything.
+        if (CANCEL_RE.test(content)) {
+          const bot = await TicketCreationService.cancelDraft(
+            workspaceId,
+            user.id,
+          );
+          if (bot) io.to(room).emit("chat:message", bot);
+          return;
+        }
+
+        // 2. Active draft? Route this message as a stage response.
+        if (TicketCreationService.hasDraft(workspaceId, user.id)) {
+          try {
+            const bot = await TicketCreationService.handleResponse({
+              workspaceId,
+              userId: user.id,
+              userName: user.name,
+              content,
+            });
+            io.to(room).emit("chat:message", bot);
+          } catch (err) {
+            await emitBotError(io, room, workspaceId, err);
+          }
+          return;
+        }
+
+        // 3. Explicit @ticket trigger.
+        const ticket = extractTicketRequest(content);
+        if (ticket) {
+          try {
+            const bot = await TicketCreationService.startDraft({
+              workspaceId,
+              userId: user.id,
+              userName: user.name,
+              userEmail: user.email ?? null,
+              title: ticket.title,
+              description: ticket.description,
+            });
+            io.to(room).emit("chat:message", bot);
+          } catch (err) {
+            await emitBotError(io, room, workspaceId, err);
+          }
+          return;
+        }
+
+        // 4. @brain trigger — classify in parallel for ticket-creation intent
+        //    alongside the existing Q&A path.
         const question = extractBrainQuestion(content);
         if (question) {
           io.to(room).emit("chat:brain-thinking", { workspaceId });
 
           try {
+            const intent = await TicketIntentService.classify(question);
+            if (intent.intent === "create_ticket") {
+              const bot = await TicketCreationService.startDraft({
+                workspaceId,
+                userId: user.id,
+                userName: user.name,
+                userEmail: user.email ?? null,
+                title: intent.title,
+                description: intent.description ?? question,
+              });
+              io.to(room).emit("chat:message", bot);
+              return;
+            }
+
             const assistantMsg = await ChatService.askBrain(
               workspaceId,
               question,
             );
             io.to(room).emit("chat:message", assistantMsg);
           } catch (err) {
-            console.error("⚠️ @brain query failed:", err);
-            io.to(room).emit("chat:brain-error", {
-              workspaceId,
-              error: "Brain failed to process the query. Please try again.",
-            });
+            if (err instanceof AppError) {
+              await emitBotError(io, room, workspaceId, err);
+            } else {
+              console.error("⚠️ @brain query failed:", err);
+              io.to(room).emit("chat:brain-error", {
+                workspaceId,
+                error: "Brain failed to process the query. Please try again.",
+              });
+            }
           }
         }
       } catch (err) {
