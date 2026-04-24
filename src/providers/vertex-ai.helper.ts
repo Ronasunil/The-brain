@@ -138,7 +138,7 @@ export async function callVertexJson<T = unknown>(
       signal: controller.signal,
     });
   } catch (err: any) {
-    throw new AppError(`Vertex call failed: ${err?.message ?? err}`, 502);
+    throw new AppError(`Vertex call failed: ${err ?? err}`, 502);
   } finally {
     clearTimeout(timer);
   }

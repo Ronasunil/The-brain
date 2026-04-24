@@ -41,7 +41,11 @@ export const TicketIntentService = {
           string,
           unknown
         >,
-        timeoutMs: 12_000,
+        // 20s — Flash-Lite usually answers in 500–2000ms, but Vertex can
+        // occasionally lag under load. The fallback to {intent:"other"}
+        // is graceful for the user, so we'd rather wait a little longer
+        // than spam aborts.
+        timeoutMs: 20_000,
       });
 
       const parsed = ticketIntentSchema.safeParse(raw);
@@ -63,10 +67,10 @@ export const TicketIntentService = {
       return { intent: "other" };
     } catch (err) {
       if (err instanceof VertexUnavailableError) return { intent: "other" };
-      console.warn(
-        "TicketIntentService.classify failed, falling through:",
-        err instanceof Error ? err.message : err,
-      );
+      // Expected degradation path — fall through to @brain Q&A without noise.
+      // Keep it one line; no stack trace.
+      const msg = err instanceof Error ? err.message : String(err);
+      console.warn(`⚠️  TicketIntent classify soft-failed (falling through): ${msg}`);
       return { intent: "other" };
     }
   },

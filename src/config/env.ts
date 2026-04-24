@@ -63,6 +63,13 @@ const envSchema = z.object({
   // GitHub codebase indexing
   GITHUB_REPOS_DIR: z.string().default("./data/repos"),
   GITHUB_SYNC_INTERVAL_MS: z.string().default("3600000"),
+
+  // Brain pipeline selector. `hybrid` (default) routes every @brain question
+  // through BrainService — structured SQL + semantic retrieval merged by the
+  // LLM synthesizer. `legacy` keeps the pre-refactor QueryService.ask binary
+  // router (aggregation vs content). Flip to `legacy` to roll back without
+  // code changes.
+  BRAIN_PIPELINE: z.enum(["hybrid", "legacy"]).default("hybrid"),
 });
 
 const parsed = envSchema.safeParse(process.env);

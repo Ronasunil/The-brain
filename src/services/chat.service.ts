@@ -1,13 +1,10 @@
-import { randomUUID } from "node:crypto";
 import { ChatMessageRepository } from "../db/chat-message.repository";
-import { MessageService } from "./message.service";
-import { QueryService } from "./query.service";
-import { IntegrationService } from "./integration.service";
+import { BrainService } from "./brain.service";
 import { ChatMessage, BrainAnswer } from "../lib/types";
 
 export const ChatService = {
   /**
-   * Save a user message to the chat thread and ingest it into the brain.
+   * Save a user message to the chat thread.
    */
   async sendMessage(
     workspaceId: string,
@@ -15,36 +12,13 @@ export const ChatService = {
     userName: string,
     content: string,
   ): Promise<ChatMessage> {
-    const chatMsg = await ChatMessageRepository.create({
+    return ChatMessageRepository.create({
       workspace_id: workspaceId,
       user_id: userId,
       user_name: userName,
       role: "user",
       content,
     });
-
-    // Ingest into RAG index (same path as Telegram messages)
-    try {
-      const manualIntegration =
-        await IntegrationService.getManualIntegration(workspaceId);
-
-      await MessageService.ingest({
-        workspace_id: workspaceId,
-        integration_id: manualIntegration.id,
-        source: "web",
-        source_message_id: `webchat:${chatMsg.id}`,
-        user_name: userName,
-        user_id: userId,
-        chat_id: `webchat:${workspaceId}`,
-        chat_name: "Web Chat",
-        content,
-        timestamp: new Date(),
-      });
-    } catch (err) {
-      console.error("⚠️ Failed to ingest web chat message into RAG:", err);
-    }
-
-    return chatMsg;
   },
 
   /**
@@ -54,7 +28,7 @@ export const ChatService = {
     workspaceId: string,
     question: string,
   ): Promise<ChatMessage> {
-    const result: BrainAnswer = await QueryService.ask(question, workspaceId);
+    const result: BrainAnswer = await BrainService.ask(question, workspaceId);
 
     const assistantMsg = await ChatMessageRepository.create({
       workspace_id: workspaceId,

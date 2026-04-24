@@ -15,22 +15,50 @@ import {
 } from "../lib/types/entity.types";
 
 export interface QueryTicketsOpts {
-  statusCategory?: "open" | "closed" | "cancelled" | "any";
+  /** Status lifecycle category. Multiple OR'd. Omit/empty → default to "open". */
+  statusCategories?: Array<"open" | "closed" | "cancelled" | "any">;
+  /** Linear's exact column name ("Backlog", "In Review", "Done"). OR'd. */
+  statusNames?: string[];
+
+  // Assignee
   assigneeId?: string;
-  assigneeName?: string;
-  assigneeEmail?: string;
-  priority?: number;
+  assigneeIds?: string[];
+  /** Fuzzy ilike word-match on state.assignee_name. */
+  assigneeNames?: string[];
+  assigneeEmails?: string[];
+
+  // Creator
+  creatorIds?: string[];
+  /** Fuzzy ilike word-match on state.creator_name. */
+  creatorNames?: string[];
+  creatorEmails?: string[];
+
+  // Priority
+  priorities?: number[];
+  priorityLabels?: string[];
+
+  // Team / project / cycle
+  teamKeys?: string[];
+  teamIds?: string[];
+  projectNames?: string[];
+  projectIds?: string[];
   cycleId?: string;
-  teamKey?: string;
-  /** jsonb containment — any of these labels must be present on the ticket */
+  cycleIds?: string[];
+  cycleNumbers?: number[];
+
+  /** jsonb containment — all of these labels must be present on the ticket */
   labels?: string[];
-  /** Inclusive lower bound on state.completed_at */
+
+  /** state.completed_at window */
   completedAfter?: Date;
-  /** Inclusive upper bound on state.completed_at */
   completedBefore?: Date;
-  /** Inclusive bounds on external_updated_at */
+  /** external_created_at window (when the ticket was filed) */
+  createdAfter?: Date;
+  createdBefore?: Date;
+  /** external_updated_at window (last change) */
   updatedAfter?: Date;
   updatedBefore?: Date;
+
   limit?: number;
 }
 
@@ -44,50 +72,104 @@ function applyTicketFilters<Q extends { [k: string]: any }>(
   query: Q,
   opts: QueryTicketsOpts,
 ): Q {
-  const category = opts.statusCategory ?? "open";
+  const categories: Array<"open" | "closed" | "cancelled" | "any"> =
+    opts.statusCategories && opts.statusCategories.length > 0
+      ? opts.statusCategories
+      : ["open"];
 
-  if (category === "open") {
-    query = query.in("state->>status", [...LINEAR_OPEN_STATUS_TYPES]);
-  } else if (category === "closed") {
-    query = query.eq("state->>status", "completed");
-  } else if (category === "cancelled") {
-    query = query.eq("state->>status", "cancelled");
+  // If any selected category is "any", drop the status predicate entirely.
+  if (!categories.includes("any")) {
+    const statusValues: string[] = [];
+    for (const c of categories) {
+      if (c === "open") statusValues.push(...LINEAR_OPEN_STATUS_TYPES);
+      else if (c === "closed") statusValues.push("completed");
+      else if (c === "cancelled") statusValues.push("cancelled");
+    }
+    if (statusValues.length > 0) {
+      query = query.in("state->>status", Array.from(new Set(statusValues)));
+    }
   }
-  // 'any' → no status predicate
 
+  if (opts.statusNames && opts.statusNames.length > 0) {
+    query = query.in("state->>status_name", opts.statusNames);
+  }
+
+  // Assignee — id / ids are exact; names are fuzzy ilike-OR; emails exact.
   if (opts.assigneeId) {
     query = query.eq("state->>assignee_id", opts.assigneeId);
   }
-  if (opts.assigneeName) {
-    const n = opts.assigneeName.replace(/[^A-Za-z0-9 _-]/g, "").trim();
-    if (n.length > 0) {
-      query = query.or(
-        [
-          `state->>assignee_name.ilike.${n}`,
-          `state->>assignee_name.ilike.${n} %`,
-          `state->>assignee_name.ilike.% ${n}`,
-          `state->>assignee_name.ilike.% ${n} %`,
-        ].join(","),
-      );
-    }
+  if (opts.assigneeIds && opts.assigneeIds.length > 0) {
+    query = query.in("state->>assignee_id", opts.assigneeIds);
   }
-  if (opts.assigneeEmail) {
-    // Exact email match — email is a unique-ish identifier, no fuzzy needed.
-    query = query.eq("state->>assignee_email", opts.assigneeEmail);
+  if (opts.assigneeNames && opts.assigneeNames.length > 0) {
+    const clauses = buildFuzzyNameClauses(
+      "state->>assignee_name",
+      opts.assigneeNames,
+    );
+    if (clauses.length > 0) query = query.or(clauses.join(","));
   }
-  if (opts.priority !== undefined) {
-    query = query.eq("state->>priority", String(opts.priority));
+  if (opts.assigneeEmails && opts.assigneeEmails.length > 0) {
+    query = query.in("state->>assignee_email", opts.assigneeEmails);
+  }
+
+  // Creator — same shape as assignee.
+  if (opts.creatorIds && opts.creatorIds.length > 0) {
+    query = query.in("state->>creator_id", opts.creatorIds);
+  }
+  if (opts.creatorNames && opts.creatorNames.length > 0) {
+    const clauses = buildFuzzyNameClauses(
+      "state->>creator_name",
+      opts.creatorNames,
+    );
+    if (clauses.length > 0) query = query.or(clauses.join(","));
+  }
+  if (opts.creatorEmails && opts.creatorEmails.length > 0) {
+    query = query.in("state->>creator_email", opts.creatorEmails);
+  }
+
+  // Priority — numeric or label.
+  if (opts.priorities && opts.priorities.length > 0) {
+    query = query.in(
+      "state->>priority",
+      opts.priorities.map((p) => String(p)),
+    );
+  }
+  if (opts.priorityLabels && opts.priorityLabels.length > 0) {
+    query = query.in("state->>priority_label", opts.priorityLabels);
+  }
+
+  // Team / project / cycle.
+  if (opts.teamKeys && opts.teamKeys.length > 0) {
+    query = query.in("state->>team_key", opts.teamKeys);
+  }
+  if (opts.teamIds && opts.teamIds.length > 0) {
+    query = query.in("state->>team_id", opts.teamIds);
+  }
+  if (opts.projectNames && opts.projectNames.length > 0) {
+    query = query.in("state->>project_name", opts.projectNames);
+  }
+  if (opts.projectIds && opts.projectIds.length > 0) {
+    query = query.in("state->>project_id", opts.projectIds);
   }
   if (opts.cycleId) {
     query = query.eq("state->>cycle_id", opts.cycleId);
   }
-  if (opts.teamKey) {
-    query = query.eq("state->>team_key", opts.teamKey);
+  if (opts.cycleIds && opts.cycleIds.length > 0) {
+    query = query.in("state->>cycle_id", opts.cycleIds);
   }
+  if (opts.cycleNumbers && opts.cycleNumbers.length > 0) {
+    query = query.in(
+      "state->>cycle_number",
+      opts.cycleNumbers.map((n) => String(n)),
+    );
+  }
+
   if (opts.labels && opts.labels.length > 0) {
     // jsonb @> containment — state.labels must contain ALL of these values.
     query = query.contains("state->labels", opts.labels);
   }
+
+  // Date windows — three orthogonal axes.
   if (opts.completedAfter) {
     query = query.gte(
       "state->>completed_at",
@@ -98,6 +180,18 @@ function applyTicketFilters<Q extends { [k: string]: any }>(
     query = query.lte(
       "state->>completed_at",
       opts.completedBefore.toISOString(),
+    );
+  }
+  if (opts.createdAfter) {
+    query = query.gte(
+      "external_created_at",
+      opts.createdAfter.toISOString(),
+    );
+  }
+  if (opts.createdBefore) {
+    query = query.lte(
+      "external_created_at",
+      opts.createdBefore.toISOString(),
     );
   }
   if (opts.updatedAfter) {
@@ -114,6 +208,29 @@ function applyTicketFilters<Q extends { [k: string]: any }>(
   }
 
   return query;
+}
+
+/**
+ * For a jsonb text field (e.g. `state->>assignee_name`), build a list of
+ * PostgREST OR clauses that match each name as a whole token (start of
+ * string, surrounded by spaces, or end of string). The caller OR's them.
+ */
+function buildFuzzyNameClauses(
+  field: string,
+  names: string[],
+): string[] {
+  const clauses: string[] = [];
+  for (const raw of names) {
+    const n = raw.replace(/[^A-Za-z0-9 _-]/g, "").trim();
+    if (!n) continue;
+    clauses.push(
+      `${field}.ilike.${n}`,
+      `${field}.ilike.${n} %`,
+      `${field}.ilike.% ${n}`,
+      `${field}.ilike.% ${n} %`,
+    );
+  }
+  return clauses;
 }
 
 function mapEntityRow(row: any): Entity {
@@ -369,10 +486,10 @@ export const EntityRepository = {
    * "platform-knowledge" structural questions: assigned-to-X, done-today,
    * pending-for-Y, cycle-current, priority bands, team scoping.
    *
-   * All filters are optional. When `statusCategory` is 'open' we hit the
-   * partial index `idx_entities_open_by_*`; for 'closed' we read from the
-   * completed partial index; for any other combination we fall back to the
-   * generic state GIN index.
+   * All filters are optional. When `statusCategories` is just ['open'] we
+   * hit the partial index `idx_entities_open_by_*`; for ['closed'] we read
+   * from the completed partial index; for any other combination we fall
+   * back to the generic state GIN index.
    */
   async queryTickets(
     workspaceId: string,
@@ -433,10 +550,14 @@ export const EntityRepository = {
     workspaceId: string,
     field:
       | "assignee_name"
+      | "creator_name"
+      | "status"
       | "status_name"
+      | "priority"
       | "priority_label"
       | "team_key"
-      | "project_name",
+      | "project_name"
+      | "cycle_number",
     opts: QueryTicketsOpts = {},
   ): Promise<Array<{ bucket: string; count: number }>> {
     const supabase = getSupabaseClient();
@@ -501,7 +622,7 @@ export const EntityRepository = {
 
   /**
    * Kept for backward compat with earlier code paths — delegates to the
-   * generalized queryTickets with statusCategory='open'.
+   * generalized queryTickets with status=open.
    */
   async queryOpenByWorkspace(
     workspaceId: string,
@@ -514,11 +635,11 @@ export const EntityRepository = {
     } = {},
   ): Promise<Entity[]> {
     return this.queryTickets(workspaceId, {
-      statusCategory: "open",
+      statusCategories: ["open"],
       assigneeId: opts.assigneeId,
-      priority: opts.priority,
+      priorities: opts.priority !== undefined ? [opts.priority] : undefined,
       cycleId: opts.cycleId,
-      teamKey: opts.teamKey,
+      teamKeys: opts.teamKey ? [opts.teamKey] : undefined,
       limit: opts.limit,
     });
   },
