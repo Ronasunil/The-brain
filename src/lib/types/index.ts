@@ -5,7 +5,13 @@ export type {
   CreateMessageInput,
   SearchResult,
   BrainAnswer,
+  BrainAnswerSource,
   RememberedItem,
+  ChatMessage,
+  CreateChatMessageInput,
+  ChatCardPayload,
+  LinearTicketCard,
+  LinearTicketCardIssue,
 } from "./message.types";
 export { MESSAGE_SOURCES } from "./message.types";
 export type {
@@ -30,12 +36,34 @@ export type {
   IntegrationStatus,
   IntegrationConfig,
   TelegramIntegrationConfig,
+  LinearIntegrationConfig,
   CreateIntegrationInput,
   IntegrationResponse,
 } from "./integration.types";
 export { INTEGRATION_TYPES, INTEGRATION_STATUSES } from "./integration.types";
 export type {
+  Entity,
+  EntityType,
+  EntityLinkKind,
+  LinearEntityState,
+  LinearStatusType,
+  EntityParticipant,
+  CreateEntityInput,
+  EntityComment,
+  CreateEntityCommentInput,
+  EntityLink,
+  EntitySearchResult,
+  EntityCommentSearchResult,
+} from "./entity.types";
+export { ENTITY_TYPES, ENTITY_LINK_KINDS, LINEAR_STATUS_TYPES } from "./entity.types";
+export type {
   Workspace,
   CreateWorkspaceInput,
   UpdateWorkspaceInput,
 } from "./workspace.types";
+export type {
+  CodeChunk,
+  CreateCodeChunkInput,
+  CodeSearchResult,
+  GitHubIntegrationConfig,
+} from "./code-chunk.types";

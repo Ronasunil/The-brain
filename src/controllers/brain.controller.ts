@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { Request, Response } from "express";
 import { withErrorHandler } from "../lib/errors";
-import { QueryService } from "../services/query.service";
+import { BrainService } from "../services/brain.service";
 import { MessageService } from "../services/message.service";
 import { IntegrationService } from "../services/integration.service";
 import { AuthenticatedRequest, RememberedItem } from "../lib/types";
@@ -15,7 +15,7 @@ export const BrainController = {
     const { question, workspace_id, integration_id } = (req as any)
       .validatedBody as AskQuestionPayload;
 
-    const result = await QueryService.ask(
+    const result = await BrainService.ask(
       question,
       workspace_id,
       integration_id,

@@ -138,7 +138,65 @@ export const IntegrationRepository = {
     return mapRow(data);
   },
 
+  /**
+   * Merge `patch` into `integrations.config` at the SQL level (jsonb ||)
+   * instead of read-modify-write in Node. Two concurrent callers merging
+   * different keys won't clobber each other's writes.
+   */
+  async mergeConfig(
+    id: string,
+    patch: Record<string, unknown>,
+  ): Promise<Integration | null> {
+    const supabase = getSupabaseClient();
+    const { data, error } = await supabase.rpc("merge_integration_config", {
+      integration_id_in: id,
+      patch_in: patch,
+    });
+    if (error) {
+      throw new Error(`Failed to merge integration config: ${error.message}`);
+    }
+    if (!data || (Array.isArray(data) && data.length === 0)) return null;
+    const row = Array.isArray(data) ? data[0] : data;
+    return mapRow(row);
+  },
+
   async softDelete(id: string): Promise<void> {
     await this.updateStatus(id, "disconnected");
+  },
+
+  /**
+   * Linear integrations whose backfill never finished (e.g. crashed process).
+   * Server startup calls this to restart them from their saved cursor.
+   */
+  async findIncompleteLinearBackfills(): Promise<Integration[]> {
+    const supabase = getSupabaseClient();
+    // Using `not` on JSONB key requires fetching and filtering in Node
+    // because Supabase JS doesn't expose JSONB boolean coercion nicely.
+    const { data, error } = await supabase
+      .from("integrations")
+      .select()
+      .eq("type", "linear")
+      .eq("status", "active");
+    if (error) {
+      throw new Error(`Failed to enumerate integrations: ${error.message}`);
+    }
+    return (data ?? [])
+      .map(mapRow)
+      .filter((row) => {
+        const cfg = row.config as Record<string, unknown>;
+        return cfg.backfill_complete !== true;
+      });
+  },
+
+  async hardDelete(id: string): Promise<void> {
+    const supabase = getSupabaseClient();
+    const { error } = await supabase
+      .from("integrations")
+      .delete()
+      .eq("id", id);
+
+    if (error) {
+      throw new Error(`Failed to delete integration: ${error.message}`);
+    }
   },
 };

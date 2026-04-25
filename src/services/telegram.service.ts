@@ -1,7 +1,7 @@
 import TelegramBot from "node-telegram-bot-api";
 import { env } from "../config/env";
 import { MessageService } from "./message.service";
-import { QueryService } from "./query.service";
+import { BrainService } from "./brain.service";
 import { IntegrationService } from "./integration.service";
 import { CreateMessageInput } from "../lib/types";
 import { Integration } from "../lib/types/integration.types";
@@ -136,19 +136,27 @@ export const TelegramBotService = {
 
     await telegramBot.sendChatAction(chatId, "typing");
 
-    const result = await QueryService.ask(question, integration.workspace_id);
+    const result = await BrainService.ask(question, integration.workspace_id);
 
     let response = `🧠 ${escapeMarkdown(result.answer)}`;
 
     if (result.sources.length > 0) {
       response += "\n\n📎 *Sources:*";
       for (const source of result.sources) {
-        const date = new Date(source.timestamp).toLocaleDateString("en-US", {
-          year: "numeric",
-          month: "short",
-          day: "numeric",
-        });
-        response += `\n• _"${escapeMarkdown(truncate(source.content, 80))}"_ — ${escapeMarkdown(source.user_name)} via ${source.source} (${date})`;
+        if (source.source === "github" && source.file_path) {
+          const loc =
+            source.line_start && source.line_end
+              ? `:${source.line_start}-${source.line_end}`
+              : "";
+          response += `\n• \`${source.file_path}${loc}\` (code)`;
+        } else {
+          const date = new Date(source.timestamp).toLocaleDateString("en-US", {
+            year: "numeric",
+            month: "short",
+            day: "numeric",
+          });
+          response += `\n• _"${escapeMarkdown(truncate(source.content, 80))}"_ — ${escapeMarkdown(source.user_name)} via ${source.source} (${date})`;
+        }
       }
     }
 
