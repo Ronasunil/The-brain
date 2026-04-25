@@ -78,3 +78,23 @@ export interface QueryPlan {
    */
   group_by?: string | null;
 }
+
+/**
+ * Which knowledge surface a content question lives on. Only consulted
+ * when the plan is null (semantic path). When absent or below the
+ * confidence threshold, the retriever fires all sources — today's
+ * behavior, preserved as the failure mode.
+ *
+ *   linear  → entities vec + entities FTS + entity comments
+ *   code    → code chunks vec + code chunks FTS
+ *   chat    → messages vec + messages FTS
+ *   mixed   → linear ∪ chat (not code) — for questions that straddle
+ *             tickets and team discussion
+ */
+export type RetrievalDomain = "linear" | "code" | "chat" | "mixed";
+
+export interface RetrievalScope {
+  domain: RetrievalDomain | null;
+  /** 0..1. Compared against DOMAIN_ROUTING_MIN_CONFIDENCE. */
+  confidence: number;
+}

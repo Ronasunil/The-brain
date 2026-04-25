@@ -1,12 +1,21 @@
 import { AppError } from "../lib/errors/app-error";
 import { ChatMessageRepository } from "../db/chat-message.repository";
 import { IntegrationRepository } from "../db/integration.repository";
-import { LinearProvider, LinearTeam, LinearUserRef } from "../providers/linear.provider";
+import { UserLinearPreferencesRepository } from "../db/user-linear-preferences.repository";
+import {
+  LinearProvider,
+  LinearIssue,
+  LinearTeam,
+  LinearUserRef,
+} from "../providers/linear.provider";
 import { LinearService } from "./linear.service";
 import type { Integration } from "../lib/types/integration.types";
-import type { ChatMessage } from "../lib/types";
 import type {
-  DraftStage,
+  ChatMessage,
+  LinearTicketCard,
+  LinearTicketCardIssue,
+} from "../lib/types";
+import type {
   ParseResult,
   TicketDraft,
 } from "../lib/types/ticket-draft.types";
@@ -14,14 +23,18 @@ import type {
 /**
  * Ticket Creation Service
  *
- * An interactive in-memory state machine that walks a user through creating
- * a Linear ticket inside the chat. Each user can have one in-flight draft
- * per workspace; drafts expire after 10 minutes of idleness.
+ * Fast-path: `createInstant()` files a Linear ticket with smart defaults
+ * (last team used, no priority, self as assignee when possible) and returns
+ * a structured card the frontend renders with inline edit controls.
  *
- * Storage is intentionally a single-process Map — a draft's lifetime is
- * measured in seconds-to-minutes, so crash survival has near-zero product
- * value and a DB round-trip on every chat message would be wasteful. When
- * the server is clustered, replace with Redis, not Postgres.
+ * Slow-path: when the workspace has multiple teams AND we have no team
+ * history for this user, we ask exactly one question — "which team?" —
+ * and then create the ticket immediately. The in-memory draft Map exists
+ * solely for that single round-trip.
+ *
+ * Storage is intentionally a single-process Map. A draft's lifetime is
+ * seconds; if the process dies the user just retypes their request. When
+ * the server is clustered, swap to Redis, not Postgres.
  */
 
 type DraftKey = string;
@@ -62,7 +75,13 @@ export const TicketCreationService = {
     return true;
   },
 
-  async startDraft(params: {
+  /**
+   * Fast path. Resolves a default team and creates the ticket immediately.
+   * If we can't default the team (multi-team workspace, user has no
+   * history), starts a single-question draft instead and returns the team
+   * picker prompt.
+   */
+  async createInstant(params: {
     workspaceId: string;
     userId: string;
     userName: string;
@@ -70,14 +89,6 @@ export const TicketCreationService = {
     title: string;
     description: string;
   }): Promise<ChatMessage> {
-    const key = draftKey(params.workspaceId, params.userId);
-    if (drafts.has(key)) {
-      return postBot(
-        params.workspaceId,
-        "You already have a ticket draft in progress. Finish it or type `cancel` to start a new one.",
-      );
-    }
-
     const title = normalizeTitle(params.title);
     if (!title) {
       return postBot(
@@ -95,32 +106,53 @@ export const TicketCreationService = {
       );
     }
 
-    const now = Date.now();
-    const draft: TicketDraft = {
+    const team = await resolveTeamDefault(
+      params.workspaceId,
+      params.userId,
+      integration.id,
+      teams,
+    );
+
+    if (!team) {
+      // Ambiguity fallback — start a one-question draft.
+      const now = Date.now();
+      const draft: TicketDraft = {
+        workspaceId: params.workspaceId,
+        userId: params.userId,
+        userName: params.userName,
+        userEmail: params.userEmail,
+        stage: "awaiting_team",
+        title,
+        description: params.description,
+        teamOptions: teams,
+        createdAt: now,
+        lastActivityAt: now,
+        integrationId: integration.id,
+      };
+      drafts.set(draftKey(params.workspaceId, params.userId), draft);
+      return postBot(params.workspaceId, formatTeamPrompt(title, teams));
+    }
+
+    return createAndCard({
       workspaceId: params.workspaceId,
       userId: params.userId,
-      userName: params.userName,
       userEmail: params.userEmail,
-      stage: "awaiting_team",
       title,
       description: params.description,
-      teamOptions: teams,
-      createdAt: now,
-      lastActivityAt: now,
-      integrationId: integration.id,
-    };
-    drafts.set(key, draft);
-
-    return postBot(
-      params.workspaceId,
-      formatTeamPrompt(title, teams),
-    );
+      integration,
+      team,
+    });
   },
 
+  /**
+   * Resume an in-flight draft. Currently only used for the team-ambiguity
+   * follow-up; once team is picked we finalize and create.
+   */
   async handleResponse(params: {
     workspaceId: string;
     userId: string;
     userName: string;
+    userEmail: string | null;
     content: string;
   }): Promise<ChatMessage> {
     const key = draftKey(params.workspaceId, params.userId);
@@ -131,74 +163,26 @@ export const TicketCreationService = {
     draft.lastActivityAt = Date.now();
 
     const text = params.content.trim();
-
-    switch (draft.stage) {
-      case "awaiting_team": {
-        const parsed = parseTeamChoice(text, draft.teamOptions ?? []);
-        if (!parsed.ok) {
-          return postBot(
-            draft.workspaceId,
-            `${parsed.reason}\n\n${formatTeamPrompt(draft.title, draft.teamOptions ?? [])}`,
-          );
-        }
-        draft.teamId = parsed.value.id;
-        draft.teamKey = parsed.value.key;
-        draft.stage = "awaiting_priority";
-        return postBot(
-          draft.workspaceId,
-          formatPriorityPrompt(parsed.value.key),
-        );
-      }
-
-      case "awaiting_priority": {
-        const parsed = parsePriorityChoice(text);
-        if (!parsed.ok) {
-          return postBot(
-            draft.workspaceId,
-            `${parsed.reason}\n\n${formatPriorityPrompt(draft.teamKey ?? "")}`,
-          );
-        }
-        draft.priority = parsed.value;
-
-        const integration = await ensureLinearIntegration(draft.workspaceId);
-        const users = await fetchUsers(integration);
-        draft.userOptions = users;
-        draft.stage = "awaiting_assignee";
-        return postBot(
-          draft.workspaceId,
-          formatAssigneePrompt(draft.priority, users),
-        );
-      }
-
-      case "awaiting_assignee": {
-        const parsed = parseAssigneeChoice(
-          text,
-          draft.userOptions ?? [],
-          draft.userEmail,
-        );
-        if (!parsed.ok) {
-          return postBot(
-            draft.workspaceId,
-            `${parsed.reason}\n\n${formatAssigneePrompt(draft.priority ?? 0, draft.userOptions ?? [])}`,
-          );
-        }
-        draft.assigneeId = parsed.value?.id ?? null;
-        draft.stage = "creating";
-
-        try {
-          return await finalizeAndCreate(draft);
-        } finally {
-          drafts.delete(key);
-        }
-      }
-
-      case "creating": {
-        return postBot(
-          draft.workspaceId,
-          "Still creating your ticket — hang on a moment…",
-        );
-      }
+    const parsed = parseTeamChoice(text, draft.teamOptions);
+    if (!parsed.ok) {
+      return postBot(
+        draft.workspaceId,
+        `${parsed.reason}\n\n${formatTeamPrompt(draft.title, draft.teamOptions)}`,
+      );
     }
+
+    const integration = await ensureLinearIntegration(draft.workspaceId);
+    drafts.delete(key);
+
+    return createAndCard({
+      workspaceId: draft.workspaceId,
+      userId: draft.userId,
+      userEmail: draft.userEmail,
+      title: draft.title,
+      description: draft.description,
+      integration,
+      team: parsed.value,
+    });
   },
 
   async cancelDraft(
@@ -206,8 +190,7 @@ export const TicketCreationService = {
     userId: string,
   ): Promise<ChatMessage | null> {
     const key = draftKey(workspaceId, userId);
-    const draft = drafts.get(key);
-    if (!draft) return null;
+    if (!drafts.has(key)) return null;
     drafts.delete(key);
     return postBot(workspaceId, "Draft cancelled.");
   },
@@ -223,16 +206,12 @@ export const TicketCreationService = {
       for (const [key, draft] of drafts.entries()) {
         if (now - draft.lastActivityAt > DRAFT_TTL_MS) {
           drafts.delete(key);
-          if (draft.stage !== "awaiting_team") {
-            // Post expiry notice only if the user had invested more than the
-            // initial prompt. Silent cleanup of bare starts avoids noise.
-            postBot(
-              draft.workspaceId,
-              "Your ticket draft expired (10 min idle). Start again with `@ticket <summary>`.",
-            ).catch(() => {
-              /* best-effort notice */
-            });
-          }
+          postBot(
+            draft.workspaceId,
+            "Your ticket draft expired (10 min idle). Start again with `@ticket <summary>`.",
+          ).catch(() => {
+            /* best-effort notice */
+          });
         }
       }
     }, JANITOR_INTERVAL_MS);
@@ -254,6 +233,42 @@ export const TicketCreationService = {
     usersCache.clear();
   },
 };
+
+// ─── Default resolution ──────────────────────────
+
+/**
+ * Pick a team without asking the user.
+ *
+ * Order:
+ *   1. Single team in workspace → use it.
+ *   2. Last team this user filed a ticket in (per integration) → use it,
+ *      provided that team still exists.
+ *   3. Otherwise null → caller falls back to the one-question prompt.
+ *
+ * We deliberately do NOT pick "first alphabetically" as a silent default
+ * for multi-team workspaces: filing into the wrong team is hard to undo
+ * (Linear identifier changes), and a single one-time question is much
+ * cheaper than a misfiled ticket.
+ */
+async function resolveTeamDefault(
+  workspaceId: string,
+  userId: string,
+  integrationId: string,
+  teams: LinearTeam[],
+): Promise<LinearTeam | null> {
+  if (teams.length === 1) return teams[0]!;
+
+  const pref = await UserLinearPreferencesRepository.get(
+    workspaceId,
+    userId,
+    integrationId,
+  );
+  if (pref) {
+    const match = teams.find((t) => t.id === pref.last_team_id);
+    if (match) return match;
+  }
+  return null;
+}
 
 // ─── Linear integration helpers ──────────────────
 
@@ -306,40 +321,200 @@ async function fetchUsers(integration: Integration): Promise<LinearUserRef[]> {
   return users;
 }
 
-async function finalizeAndCreate(draft: TicketDraft): Promise<ChatMessage> {
-  const integration = await ensureLinearIntegration(draft.workspaceId);
-  const token = await LinearService.getAccessToken(integration);
+// ─── Create + hydrate + card ─────────────────────
 
+interface CreateAndCardArgs {
+  workspaceId: string;
+  userId: string;
+  userEmail: string | null;
+  title: string;
+  description: string;
+  integration: Integration;
+  team: LinearTeam;
+}
+
+async function createAndCard(args: CreateAndCardArgs): Promise<ChatMessage> {
+  const token = await LinearService.getAccessToken(args.integration);
+
+  // Try to set the requesting user as assignee on creation if their email
+  // matches a Linear user. This is a default — they can change it inline.
+  let assigneeId: string | undefined;
+  if (args.userEmail) {
+    try {
+      const users = await fetchUsers(args.integration);
+      const me = users.find(
+        (u) => u.email && u.email.toLowerCase() === args.userEmail!.toLowerCase(),
+      );
+      if (me) assigneeId = me.id;
+    } catch {
+      // self-assign is best-effort; never block creation on a lookup failure.
+    }
+  }
+
+  let created;
   try {
-    const issue = await LinearProvider.createIssue(token, {
-      teamId: draft.teamId!,
-      title: draft.title,
-      description: draft.description || undefined,
-      priority: draft.priority,
-      assigneeId: draft.assigneeId ?? undefined,
+    created = await LinearProvider.createIssue(token, {
+      teamId: args.team.id,
+      title: args.title,
+      description: args.description || undefined,
+      priority: 0,
+      assigneeId,
     });
-
-    const assigneeLabel = draft.assigneeId
-      ? draft.userOptions?.find((u) => u.id === draft.assigneeId)?.name ??
-        "assigned"
-      : "unassigned";
-    const priorityLabel = PRIORITY_LABELS[draft.priority ?? 0];
-
-    return postBot(
-      draft.workspaceId,
-      [
-        `✅ Created **${issue.identifier}** — ${issue.title}`,
-        issue.url,
-        `Team: ${draft.teamKey} · Priority: ${priorityLabel} · Assignee: ${assigneeLabel}`,
-      ].join("\n"),
-    );
-  } catch (err: any) {
+  } catch (err) {
     const msg = err instanceof AppError ? err.message : "unknown error";
     return postBot(
-      draft.workspaceId,
-      `⚠️ I couldn't create the ticket: ${msg}. Your draft has been cleared — feel free to try again.`,
+      args.workspaceId,
+      `⚠️ I couldn't create the ticket: ${msg}.`,
     );
   }
+
+  // Persist the team default — best-effort, never block on it.
+  UserLinearPreferencesRepository.upsertLastTeam({
+    workspace_id: args.workspaceId,
+    user_id: args.userId,
+    integration_id: args.integration.id,
+    last_team_id: args.team.id,
+  }).catch((err) => {
+    console.warn(
+      `Failed to upsert last_team_id for user ${args.userId}: ${err?.message ?? err}`,
+    );
+  });
+
+  // Hydrate the full issue so the card can render status/assignee/team
+  // from authoritative server state. Dropdown options (users, workflow
+  // states) are fetched on demand by the frontend via teamOptions to keep
+  // chat_messages.card rows lean — they don't belong in persisted history.
+  let hydrated: LinearIssue | null = null;
+  try {
+    hydrated = await LinearProvider.getIssueById(token, created.id);
+  } catch {
+    /* hydration is best-effort — fall through to the slim payload */
+  }
+
+  // Self-assign fallback resolution still needs the users list when the
+  // hydrated issue isn't available; pull from the cache (already warmed
+  // earlier in this function) without a refetch.
+  const cachedUsers = usersCache.get(args.integration.id);
+  const users: LinearUserRef[] = cachedUsers?.value ?? [];
+
+  const card = buildTicketCard({
+    integrationId: args.integration.id,
+    team: args.team,
+    fallback: {
+      id: created.id,
+      identifier: created.identifier,
+      url: created.url,
+      title: created.title,
+      description: args.description || null,
+      priority: 0,
+      assigneeId,
+    },
+    issue: hydrated,
+    users,
+  });
+
+  const summary = [
+    `✅ Created **${created.identifier}** — ${created.title}`,
+    created.url,
+  ].join("\n");
+
+  return ChatMessageRepository.create({
+    workspace_id: args.workspaceId,
+    user_id: null,
+    user_name: "ticket-bot",
+    role: "assistant",
+    content: summary,
+    sources: null,
+    card,
+  });
+}
+
+interface BuildTicketCardArgs {
+  integrationId: string;
+  team: LinearTeam;
+  fallback: {
+    id: string;
+    identifier: string;
+    url: string;
+    title: string;
+    description: string | null;
+    priority: 0 | 1 | 2 | 3 | 4;
+    assigneeId: string | undefined;
+  };
+  issue: LinearIssue | null;
+  // Workspace users — only needed to resolve the assignee NAME for the
+  // fallback path (when issue hydration fails). Empty array is OK; the
+  // card just shows the user's id-less placeholder until next refresh.
+  users: LinearUserRef[];
+}
+
+function buildTicketCard(args: BuildTicketCardArgs): LinearTicketCard {
+  const issue = args.issue;
+
+  const cardIssue: LinearTicketCardIssue = issue
+    ? {
+        id: issue.id,
+        identifier: issue.identifier,
+        url: issue.url,
+        title: issue.title,
+        description: issue.description,
+        priority: clampPriority(issue.priority),
+        priorityLabel: issue.priorityLabel || PRIORITY_LABELS[clampPriority(issue.priority)],
+        status: issue.state
+          ? {
+              id: issue.state.id,
+              name: issue.state.name,
+              type: issue.state.type,
+            }
+          : null,
+        assignee: issue.assignee
+          ? {
+              id: issue.assignee.id,
+              name: issue.assignee.name,
+              email: issue.assignee.email ?? null,
+            }
+          : null,
+        team: {
+          id: issue.team?.id ?? args.team.id,
+          key: issue.team?.key ?? args.team.key,
+          name: issue.team?.name ?? args.team.name,
+        },
+        createdAt: issue.createdAt,
+      }
+    : {
+        id: args.fallback.id,
+        identifier: args.fallback.identifier,
+        url: args.fallback.url,
+        title: args.fallback.title,
+        description: args.fallback.description,
+        priority: args.fallback.priority,
+        priorityLabel: PRIORITY_LABELS[args.fallback.priority],
+        status: null,
+        assignee: (() => {
+          if (!args.fallback.assigneeId) return null;
+          const u = args.users.find((u) => u.id === args.fallback.assigneeId);
+          return u ? { id: u.id, name: u.name, email: u.email ?? null } : null;
+        })(),
+        team: {
+          id: args.team.id,
+          key: args.team.key,
+          name: args.team.name,
+        },
+        createdAt: new Date().toISOString(),
+      };
+
+  return {
+    type: "linear_ticket",
+    integrationId: args.integrationId,
+    issue: cardIssue,
+  };
+}
+
+function clampPriority(p: number | null | undefined): 0 | 1 | 2 | 3 | 4 {
+  const n = Math.round(p ?? 0);
+  if (n <= 0) return 0;
+  if (n >= 4) return 4;
+  return n as 1 | 2 | 3;
 }
 
 // ─── Bot message + prompt formatting ─────────────
@@ -355,6 +530,7 @@ async function postBot(
     role: "assistant",
     content,
     sources: null,
+    card: null,
   });
 }
 
@@ -365,9 +541,7 @@ function normalizeTitle(raw: string): string {
 }
 
 function formatTeamPrompt(title: string, teams: LinearTeam[]): string {
-  const lines = teams.map(
-    (t, i) => `${i + 1}. ${t.key} — ${t.name}`,
-  );
+  const lines = teams.map((t, i) => `${i + 1}. ${t.key} — ${t.name}`);
   return [
     `Creating a Linear ticket: **"${title}"**.`,
     ``,
@@ -375,34 +549,6 @@ function formatTeamPrompt(title: string, teams: LinearTeam[]): string {
     ...lines,
     ``,
     `Type \`cancel\` to abort.`,
-  ].join("\n");
-}
-
-function formatPriorityPrompt(teamKey: string): string {
-  const header = teamKey ? `Got it — **${teamKey}**. Priority?` : "Priority?";
-  return [
-    header,
-    `1. Urgent  2. High  3. Medium  4. Low  0. No priority`,
-    ``,
-    `Type a number, a name, or \`skip\`.`,
-  ].join("\n");
-}
-
-function formatAssigneePrompt(
-  priority: 0 | 1 | 2 | 3 | 4,
-  users: LinearUserRef[],
-): string {
-  const label = PRIORITY_LABELS[priority];
-  const preview = users.slice(0, 10);
-  const lines = preview.map((u, i) => `${i + 1}. ${u.name}`);
-  const rest = users.length > preview.length
-    ? `\n*(plus ${users.length - preview.length} more — type a name prefix)*`
-    : "";
-  return [
-    `Priority: **${label}**. Assignee?`,
-    lines.join("\n") + rest,
-    ``,
-    `Type \`me\` for yourself, \`skip\` to leave unassigned, or \`cancel\`.`,
   ].join("\n");
 }
 
@@ -417,8 +563,8 @@ function parseTeamChoice(
     return { ok: false, reason: "Please pick a team from the list." };
   }
 
-  const numeric = Number.parseInt(trimmed, 10);
-  if (Number.isFinite(numeric) && /^\d+$/.test(trimmed)) {
+  if (/^\d+$/.test(trimmed)) {
+    const numeric = Number.parseInt(trimmed, 10);
     const picked = options[numeric - 1];
     if (!picked) {
       return {
@@ -446,92 +592,5 @@ function parseTeamChoice(
   return {
     ok: false,
     reason: `I didn't recognize "${trimmed}". Please pick a number, team key, or unique name prefix.`,
-  };
-}
-
-function parsePriorityChoice(
-  input: string,
-): ParseResult<0 | 1 | 2 | 3 | 4> {
-  const lower = input.trim().toLowerCase();
-  if (!lower || lower === "skip" || lower === "none" || lower === "no priority") {
-    return { ok: true, value: 0 };
-  }
-
-  const synonyms: Record<string, 0 | 1 | 2 | 3 | 4> = {
-    urgent: 1,
-    high: 2,
-    med: 3,
-    medium: 3,
-    low: 4,
-  };
-  if (lower in synonyms) return { ok: true, value: synonyms[lower]! };
-
-  if (/^[0-4]$/.test(lower)) {
-    return { ok: true, value: Number.parseInt(lower, 10) as 0 | 1 | 2 | 3 | 4 };
-  }
-
-  return {
-    ok: false,
-    reason: `I didn't recognize "${input.trim()}".`,
-  };
-}
-
-function parseAssigneeChoice(
-  input: string,
-  options: LinearUserRef[],
-  selfEmail: string | null,
-): ParseResult<LinearUserRef | null> {
-  const lower = input.trim().toLowerCase();
-  if (!lower || lower === "skip" || lower === "none" || lower === "unassigned") {
-    return { ok: true, value: null };
-  }
-
-  if (lower === "me" || lower === "self") {
-    if (!selfEmail) {
-      return {
-        ok: false,
-        reason:
-          "I don't have your email on file to match you to a Linear user. Please type your name instead.",
-      };
-    }
-    const me = options.find(
-      (u) => u.email && u.email.toLowerCase() === selfEmail.toLowerCase(),
-    );
-    if (!me) {
-      return {
-        ok: false,
-        reason:
-          "Couldn't find you in the Linear workspace. Please type a name or `skip`.",
-      };
-    }
-    return { ok: true, value: me };
-  }
-
-  if (/^\d+$/.test(lower)) {
-    const idx = Number.parseInt(lower, 10);
-    const picked = options[idx - 1];
-    if (!picked) {
-      return {
-        ok: false,
-        reason: `No user at position ${idx}. Pick a number between 1 and ${options.length}.`,
-      };
-    }
-    return { ok: true, value: picked };
-  }
-
-  const byPrefix = options.filter((u) =>
-    u.name.toLowerCase().startsWith(lower),
-  );
-  if (byPrefix.length === 1) return { ok: true, value: byPrefix[0]! };
-  if (byPrefix.length > 1) {
-    return {
-      ok: false,
-      reason: `"${input.trim()}" matches multiple users (${byPrefix.map((u) => u.name).slice(0, 3).join(", ")}${byPrefix.length > 3 ? ", …" : ""}). Be more specific.`,
-    };
-  }
-
-  return {
-    ok: false,
-    reason: `I didn't recognize "${input.trim()}". Pick a number, name prefix, \`me\`, or \`skip\`.`,
   };
 }

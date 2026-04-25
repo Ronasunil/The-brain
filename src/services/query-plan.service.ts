@@ -6,9 +6,10 @@ import {
 import { env } from "../config/env";
 import {
   queryPlanSchema,
+  retrievalScopeSchema,
   QUERY_PLAN_RESPONSE_JSON_SCHEMA,
 } from "../lib/validations/query-plan.schema";
-import { QueryPlan } from "../lib/types/query-plan.types";
+import { QueryPlan, RetrievalScope } from "../lib/types/query-plan.types";
 
 /**
  * Query Plan Generator.
@@ -25,18 +26,26 @@ import { QueryPlan } from "../lib/types/query-plan.types";
 export interface QueryPlanResult {
   plan: QueryPlan | null;
   description: string | null;
+  /**
+   * Retrieval-scope hint emitted by the Pro model when `plan` is null.
+   * Null when the plan is non-null (SQL path doesn't need routing) or
+   * when the model omitted it (old schema, parse failure, etc.). The
+   * semantic path treats null as "unknown → fire all sources".
+   */
+  route: RetrievalScope | null;
 }
 
 export const QueryPlanService = {
   async generate(question: string): Promise<QueryPlanResult> {
     if (!isGeminiConfigured()) {
-      return { plan: null, description: null };
+      return { plan: null, description: null, route: null };
     }
 
     try {
       const raw = await callGeminiJson<{
         plan: unknown;
         description?: string | null;
+        route?: unknown;
       }>({
         prompt: buildPrompt(question),
         responseSchema: QUERY_PLAN_RESPONSE_JSON_SCHEMA as unknown as Record<
@@ -48,13 +57,19 @@ export const QueryPlanService = {
         temperature: 0,
       });
 
+      const route = parseRoute(raw.route);
+
       if (raw.plan == null) {
+        const routeLog = route
+          ? ` route=${route.domain}/${route.confidence.toFixed(2)}`
+          : "";
         console.log(
-          `🧾 plan-gen: ${JSON.stringify(question)} → null (semantic)`,
+          `🧾 plan-gen: ${JSON.stringify(question)} → null (semantic)${routeLog}`,
         );
         return {
           plan: null,
           description: raw.description?.trim() || null,
+          route,
         };
       }
 
@@ -64,7 +79,7 @@ export const QueryPlanService = {
           "QueryPlan: output failed Zod validation",
           parsed.error.flatten(),
         );
-        return { plan: null, description: null };
+        return { plan: null, description: null, route: null };
       }
 
       console.log(
@@ -73,15 +88,18 @@ export const QueryPlanService = {
       return {
         plan: parsed.data,
         description: raw.description?.trim() || null,
+        // Route is meaningful only on the semantic path — ignore any
+        // value the model might have emitted alongside a non-null plan.
+        route: null,
       };
     } catch (err) {
       if (err instanceof GeminiUnavailableError)
-        return { plan: null, description: null };
+        return { plan: null, description: null, route: null };
       const msg = err instanceof Error ? err.message : String(err);
       console.warn(
         `⚠️  QueryPlan soft-failed (falling through to semantic): ${msg}`,
       );
-      return { plan: null, description: null };
+      return { plan: null, description: null, route: null };
     }
   },
 
@@ -103,6 +121,19 @@ export const QueryPlanService = {
     }
   },
 };
+
+// ─── Route parsing ──────────────────────────────
+
+/**
+ * Parse the optional `route` field. Invalid / absent → null, which the
+ * semantic path treats as "fire all sources" (today's behavior). Never
+ * throws — a bad route should never fail the request.
+ */
+function parseRoute(raw: unknown): RetrievalScope | null {
+  if (raw == null) return null;
+  const parsed = retrievalScopeSchema.safeParse(raw);
+  return parsed.success ? parsed.data : null;
+}
 
 // ─── Prompt ──────────────────────────────────────
 
@@ -263,7 +294,33 @@ function buildPrompt(question: string): string {
     `A: {"plan":{"table":"entities","select":"id, external_id, title, state","filters":[{"op":"in","column":"state->>priority","values":["1","2"]},{"op":"ilike","column":"state->>assignee_name","value":"%rohan%"},{"op":"in","column":"state->>status","values":["backlog","unstarted","started"]}],"order_by":{"column":"state->>priority","ascending":true},"limit":50},"description":"List urgent/high open tickets for rohan."}`,
     ``,
     `Q: "what was discussed about auth lately?"`,
-    `A: {"plan":null,"description":"Content question — route to semantic search."}`,
+    `A: {"plan":null,"description":"Content question — route to semantic search.","route":{"domain":"mixed","confidence":0.7}}`,
+    ``,
+    `=== RETRIEVAL ROUTE (only when plan is null) ===`,
+    ``,
+    `When you return {"plan": null}, ALSO return a "route" hint telling`,
+    `the semantic retriever which knowledge surface the question lives on:`,
+    ``,
+    `  "linear" — about tickets or ticket comments`,
+    `  "code"   — about source files, functions, implementation`,
+    `  "chat"   — about what someone said in team conversations`,
+    `  "mixed"  — straddles tickets + chat (not code)`,
+    ``,
+    `confidence is 0..1. Use >= 0.8 only when you are genuinely sure.`,
+    `If uncertain, pick the closest domain with low confidence — the`,
+    `retriever falls back to searching everything when confidence is low.`,
+    ``,
+    `When you return a non-null plan, OMIT the "route" field — the plan`,
+    `already names its source.`,
+    ``,
+    `Q: "find the cart discount logic"`,
+    `A: {"plan":null,"description":"Code lookup.","route":{"domain":"code","confidence":0.95}}`,
+    ``,
+    `Q: "what did rona say about the deploy yesterday?"`,
+    `A: {"plan":null,"description":"Chat history lookup.","route":{"domain":"chat","confidence":0.9}}`,
+    ``,
+    `Q: "how did we decide on cloudfront vs route53?"`,
+    `A: {"plan":null,"description":"Could be tickets or chat.","route":{"domain":"mixed","confidence":0.7}}`,
     ``,
     `Q: ${JSON.stringify(question)}`,
   ].join("\n");

@@ -10,13 +10,14 @@ import {
   executePlan,
   PlanExecutionResult,
 } from "../db/query-plan.executor";
-import { QueryPlan } from "../lib/types/query-plan.types";
+import { QueryPlan, RetrievalScope } from "../lib/types/query-plan.types";
 import { classifyQuestion } from "./query-router";
 import {
   mergeAndRerank,
   entityToSearchResult,
   UnifiedResult,
 } from "./retrieval-merger";
+import { selectSources, SourceName } from "./retrieval-scope";
 import {
   BrainAnswer,
   BrainAnswerSource,
@@ -101,7 +102,15 @@ export const BrainService = {
     }
 
     // ─── Semantic path: embedding + hybrid retrieval + synthesizer.
-    return runSemanticPath(question, workspaceId, integrationId, t0);
+    //    Pass the optional route hint so we can narrow the fan-out when
+    //    the Pro model is confident about which surface the answer lives on.
+    return runSemanticPath(
+      question,
+      workspaceId,
+      integrationId,
+      t0,
+      planGen.route,
+    );
   },
 };
 
@@ -173,7 +182,9 @@ async function runPlanPath(
     console.warn(
       `⚠️  plan execution failed, falling through to semantic: ${msg}`,
     );
-    return runSemanticPath(question, workspaceId, integrationId, t0);
+    // No route hint on this path — the Pro model already picked SQL, so
+    // we have no domain signal. Null → fire all sources.
+    return runSemanticPath(question, workspaceId, integrationId, t0, null);
   }
 
   console.log(
@@ -307,13 +318,18 @@ async function runSemanticPath(
   workspaceId: string,
   integrationId: string | undefined,
   t0: number,
+  route: RetrievalScope | null,
 ): Promise<BrainAnswer> {
+  const sources = selectSources(route);
+  logScope(route, sources);
+
   const queryEmbedding = await AIService.createEmbedding(question);
   const semantic = await runSemanticRetrieval(
     question,
     queryEmbedding,
     workspaceId,
     integrationId,
+    sources,
   );
 
   const merged = await mergeAndRerank(question, {
@@ -377,6 +393,7 @@ async function runSemanticRetrieval(
   queryEmbedding: number[],
   workspaceId: string,
   integrationId: string | undefined,
+  sources: Set<SourceName>,
 ): Promise<SemanticResults> {
   const fetchCount = AIService.supportsRerank()
     ? RERANK_INITIAL_FETCH
@@ -388,6 +405,11 @@ async function runSemanticRetrieval(
       ? Math.min(MIN_SIMILARITY_THRESHOLD, 0.15)
       : MIN_SIMILARITY_THRESHOLD;
 
+  // Each promise is gated on `sources` membership. Skipped sources
+  // resolve to [] so the destructure shape stays stable — no DB call,
+  // no round-trip latency for the ones we don't need.
+  const skip = <T>(): Promise<T[]> => Promise.resolve([]);
+
   const [
     manualResults,
     messagesCosine,
@@ -398,58 +420,85 @@ async function runSemanticRetrieval(
     codeCosine,
     codeFullText,
   ] = await Promise.all([
-    MessageRepository.searchManual(
-      workspaceId,
-      queryEmbedding,
-      MANUAL_RESERVED_SLOTS,
-      similarityThreshold,
-      integrationId,
-    ),
-    MessageRepository.searchSimilar(
-      queryEmbedding,
-      workspaceId,
-      fetchCount,
-      similarityThreshold,
-      integrationId,
-    ),
-    MessageRepository.searchFullText(
-      question,
-      workspaceId,
-      FULLTEXT_SEARCH_LIMIT,
-      integrationId,
-    ),
-    EntityRepository.searchSimilar(
-      queryEmbedding,
-      workspaceId,
-      fetchCount,
-      similarityThreshold,
-      integrationId,
-    ),
-    EntityRepository.searchFullText(
-      question,
-      workspaceId,
-      FULLTEXT_SEARCH_LIMIT,
-      integrationId,
-    ),
-    EntityCommentRepository.searchSimilar(
-      queryEmbedding,
-      workspaceId,
-      fetchCount,
-      similarityThreshold,
-    ),
-    CodeChunkRepository.searchSimilar(
-      queryEmbedding,
-      workspaceId,
-      fetchCount,
-      similarityThreshold,
-      integrationId,
-    ),
-    CodeChunkRepository.searchFullText(
-      question,
-      workspaceId,
-      FULLTEXT_SEARCH_LIMIT,
-      integrationId,
-    ),
+    sources.has("manual")
+      ? MessageRepository.searchManual(
+          workspaceId,
+          queryEmbedding,
+          MANUAL_RESERVED_SLOTS,
+          similarityThreshold,
+          integrationId,
+        )
+      : skip<SearchResult>(),
+    sources.has("messages_vec")
+      ? MessageRepository.searchSimilar(
+          queryEmbedding,
+          workspaceId,
+          fetchCount,
+          similarityThreshold,
+          integrationId,
+        )
+      : skip<SearchResult>(),
+    sources.has("messages_fts")
+      ? MessageRepository.searchFullText(
+          question,
+          workspaceId,
+          FULLTEXT_SEARCH_LIMIT,
+          integrationId,
+        )
+      : skip<SearchResult>(),
+    sources.has("entities_vec")
+      ? EntityRepository.searchSimilar(
+          queryEmbedding,
+          workspaceId,
+          fetchCount,
+          similarityThreshold,
+          integrationId,
+        )
+      : skip<EntitySearchResult>(),
+    sources.has("entities_fts")
+      ? EntityRepository.searchFullText(
+          question,
+          workspaceId,
+          FULLTEXT_SEARCH_LIMIT,
+          integrationId,
+        )
+      : skip<EntitySearchResult>(),
+    sources.has("entity_comments")
+      ? EntityCommentRepository.searchSimilar(
+          queryEmbedding,
+          workspaceId,
+          fetchCount,
+          similarityThreshold,
+        )
+      : skip<{
+          comment: {
+            id: string;
+            entity_id: string;
+            workspace_id: string;
+            author_id: string;
+            author_name: string;
+            content: string;
+            external_created_at: Date;
+          };
+          similarity: number;
+        }>(),
+    sources.has("code_vec")
+      ? CodeChunkRepository.searchSimilar(
+          queryEmbedding,
+          workspaceId,
+          fetchCount,
+          similarityThreshold,
+          integrationId,
+        )
+      : skip<CodeSearchResult>(),
+    sources.has("code_fts")
+      ? CodeChunkRepository.searchFullText(
+          question,
+          workspaceId,
+          FULLTEXT_SEARCH_LIMIT,
+          integrationId,
+        )
+      : skip<CodeSearchResult>(),
   ]);
 
   const messages = dedupeByMessageId(messagesCosine, messagesFullText);
@@ -639,6 +688,22 @@ function ticketLookupAnswer(e: Entity): BrainAnswer {
 }
 
 // ─── Observability ──────────────────────────────
+
+/**
+ * Log which retrieval sources fired. Shows both the Pro model's
+ * domain hint (if any) and the resulting source set, so you can tell
+ * at a glance whether the route took effect or fell through.
+ */
+function logScope(
+  route: RetrievalScope | null,
+  sources: Set<SourceName>,
+): void {
+  const hint = route
+    ? `domain=${route.domain}/${route.confidence.toFixed(2)}`
+    : "domain=none";
+  const picked = Array.from(sources).sort().join(",");
+  console.log(`🎯 scope: ${hint} sources=[${picked}]`);
+}
 
 function logBrain(entry: {
   path: "ticket_id" | "sql" | "semantic";

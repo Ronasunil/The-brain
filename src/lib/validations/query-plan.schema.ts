@@ -46,6 +46,18 @@ export const queryPlanSchema = z
   .strict();
 
 /**
+ * Optional retrieval-scope hint returned alongside the plan. Only used
+ * when `plan` is null (semantic path). If missing / below confidence
+ * threshold, the retriever fires all 8 sources — today's behavior.
+ */
+export const retrievalScopeSchema = z
+  .object({
+    domain: z.enum(["linear", "code", "chat", "mixed"]).nullable(),
+    confidence: z.number().min(0).max(1),
+  })
+  .strict();
+
+/**
  * JSON schema sent to Gemini (matches `queryPlanSchema`). Generative
  * Language API enforces this structure on the response.
  */
@@ -109,6 +121,19 @@ export const QUERY_PLAN_RESPONSE_JSON_SCHEMA = {
       required: ["table", "select", "filters"],
     },
     description: { type: "string", nullable: true },
+    route: {
+      type: "object",
+      nullable: true,
+      properties: {
+        domain: {
+          type: "string",
+          enum: ["linear", "code", "chat", "mixed"],
+          nullable: true,
+        },
+        confidence: { type: "number" },
+      },
+      required: ["domain", "confidence"],
+    },
   },
   required: ["plan"],
 } as const;
