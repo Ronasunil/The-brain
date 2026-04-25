@@ -67,7 +67,10 @@ function buildAggregationBlock(ctx: AggregationContext | undefined): string {
     }
   }
 
-  return `Structured query result (exact, cite ticket IDs verbatim):\n${lines.join("\n")}\n\n`;
+  // Don't label this section. The model parrots whatever name we give it
+  // ("According to the structured query result..."). The system-prompt rule
+  // below tells the model these lines are facts and to use them silently.
+  return `${lines.join("\n")}\n\n`;
 }
 
 export const AIService = {
@@ -187,7 +190,13 @@ export const AIService = {
     }
 
     if (hasAggregation) {
-      systemPrompt += `\n10. When a "Structured query result" block is present, treat its numbers, ticket IDs (e.g. BRA-7), and row lists as AUTHORITATIVE ground truth. NEVER invent ticket IDs, titles, counts, or timestamps that don't appear in that block. Cite ticket IDs verbatim. The context messages below may add color / discussion around those rows, but the structured block is the source of truth for anything numeric or enumerated.`;
+      systemPrompt += `\n10. When the answer block contains "Operation:", "Matching row count:", "Group-by buckets:", or "Matching rows:" lines, every line is a TRUE fact about a ticket that already matches the user's question. Use these facts directly to answer.
+
+CRITICAL — answer in natural English:
+  • NEVER mention "structured query result", "query", "result", "source", "according to", "the data shows", "based on the database", or any phrase that hints you are reading from a system. Answer like a teammate who just knows the facts.
+  • NEVER hedge or add disclaimers like "however, the result does not provide..." or "I cannot confirm...". If a row is present, it satisfies every part of the user's question by construction. Don't second-guess it.
+  • Cite ticket IDs verbatim (e.g. BRA-7) but do NOT preface them with "the result shows" — just state them.
+  • NEVER invent ticket IDs, titles, counts, or dates that don't appear above.`;
     }
 
     return provider.generateChatCompletion(systemPrompt, userPrompt, {

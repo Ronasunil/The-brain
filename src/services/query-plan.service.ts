@@ -1,3 +1,4 @@
+import { z } from "zod";
 import {
   callGeminiJson,
   GeminiUnavailableError,
@@ -21,6 +22,19 @@ import { QueryPlan, RetrievalScope } from "../lib/types/query-plan.types";
  * The plan mirrors the Supabase JS builder (`from().select().eq()...`)
  * so we can execute it through the existing `supabase` client without a
  * second DB connection, `pg` driver, or separate auth.
+ *
+ * RELIABILITY POSTURE:
+ *   The model occasionally drifts (e.g. emits Python-dict syntax inside
+ *   JSON, merges field=value pairs into a single column string, etc.).
+ *   We defend in three layers:
+ *     1. JSON Schema with `pattern` + `enum` constraints → most malformed
+ *        outputs never leave the model.
+ *     2. Zod validation with column-name regex → catches whatever Layer 1
+ *        let through.
+ *     3. Retry up to MAX_RETRIES with the validation error fed back into
+ *        the prompt → recovers from transient model misfires.
+ *   When all three fail, we return `{ plan: null }` and the orchestrator
+ *   falls through to semantic search. The user always gets an answer.
  */
 
 export interface QueryPlanResult {
@@ -35,72 +49,105 @@ export interface QueryPlanResult {
   route: RetrievalScope | null;
 }
 
+/** Total LLM attempts allowed for one ask: 1 initial + up to MAX_RETRIES. */
+const MAX_RETRIES = 2;
+
+const SEMANTIC_FALLBACK: QueryPlanResult = {
+  plan: null,
+  description: null,
+  route: null,
+};
+
 export const QueryPlanService = {
   async generate(question: string): Promise<QueryPlanResult> {
-    if (!isGeminiConfigured()) {
-      return { plan: null, description: null, route: null };
-    }
+    if (!isGeminiConfigured()) return SEMANTIC_FALLBACK;
 
-    try {
-      const raw = await callGeminiJson<{
-        plan: unknown;
-        description?: string | null;
-        route?: unknown;
-      }>({
-        prompt: buildPrompt(question),
-        responseSchema: QUERY_PLAN_RESPONSE_JSON_SCHEMA as unknown as Record<
-          string,
-          unknown
-        >,
-        model: env.GEMINI_SQL_MODEL,
-        timeoutMs: 30_000,
-        temperature: 0,
-      });
+    let lastBadAttempt: { plan: unknown; error: z.ZodError } | null = null;
 
-      const route = parseRoute(raw.route);
+    for (let attempt = 1; attempt <= MAX_RETRIES + 1; attempt++) {
+      try {
+        const prompt: string = lastBadAttempt
+          ? buildRetryPrompt(question, lastBadAttempt)
+          : buildPrompt(question);
 
-      if (raw.plan == null) {
-        const routeLog = route
-          ? ` route=${route.domain}/${route.confidence.toFixed(2)}`
-          : "";
-        console.log(
-          `🧾 plan-gen: ${JSON.stringify(question)} → null (semantic)${routeLog}`,
-        );
-        return {
-          plan: null,
-          description: raw.description?.trim() || null,
-          route,
-        };
-      }
+        const raw = await callGeminiJson<{
+          plan: unknown;
+          description?: string | null;
+          route?: unknown;
+        }>({
+          prompt,
+          responseSchema: QUERY_PLAN_RESPONSE_JSON_SCHEMA as unknown as Record<
+            string,
+            unknown
+          >,
+          model: env.GEMINI_SQL_MODEL,
+          timeoutMs: 30_000,
+          temperature: 0,
+        });
 
-      const parsed = queryPlanSchema.safeParse(raw.plan);
-      if (!parsed.success) {
+        const route = parseRoute(raw.route);
+
+        // Plan-null short-circuit. The model decided this is a content
+        // question — no SQL, no validation needed, route hint guides the
+        // semantic retriever.
+        if (raw.plan == null) {
+          const routeLog = route
+            ? ` route=${route.domain}/${route.confidence.toFixed(2)}`
+            : "";
+          console.log(
+            `🧾 plan-gen: ${JSON.stringify(question)} → null (semantic)${routeLog}`,
+          );
+          return {
+            plan: null,
+            description: raw.description?.trim() || null,
+            route,
+          };
+        }
+
+        const parsed = queryPlanSchema.safeParse(raw.plan);
+        if (parsed.success) {
+          if (attempt > 1) {
+            console.log(
+              `✅ plan-gen recovered on retry ${attempt - 1}/${MAX_RETRIES}`,
+            );
+          }
+          console.log(
+            `🧾 plan-gen: ${JSON.stringify(question)} → ${JSON.stringify(parsed.data)}`,
+          );
+          return {
+            plan: parsed.data,
+            description: raw.description?.trim() || null,
+            // Route is meaningful only on the semantic path — ignore any
+            // value the model might have emitted alongside a non-null plan.
+            route: null,
+          };
+        }
+
+        // Validation failed. Stash the bad output + error so the next
+        // iteration's prompt can show the model what to fix.
         console.warn(
-          "QueryPlan: output failed Zod validation",
+          `⚠️  plan-gen validation failed (attempt ${attempt}/${MAX_RETRIES + 1}):`,
           parsed.error.flatten(),
         );
-        return { plan: null, description: null, route: null };
+        lastBadAttempt = { plan: raw.plan, error: parsed.error };
+      } catch (err) {
+        if (err instanceof GeminiUnavailableError) return SEMANTIC_FALLBACK;
+        const msg = err instanceof Error ? err.message : String(err);
+        console.warn(
+          `⚠️  plan-gen call failed (attempt ${attempt}/${MAX_RETRIES + 1}): ${msg}`,
+        );
+        // Network/API error. Don't retry on this loop — probably won't
+        // recover within milliseconds. Fall through to semantic.
+        return SEMANTIC_FALLBACK;
       }
-
-      console.log(
-        `🧾 plan-gen: ${JSON.stringify(question)} → ${JSON.stringify(parsed.data)}`,
-      );
-      return {
-        plan: parsed.data,
-        description: raw.description?.trim() || null,
-        // Route is meaningful only on the semantic path — ignore any
-        // value the model might have emitted alongside a non-null plan.
-        route: null,
-      };
-    } catch (err) {
-      if (err instanceof GeminiUnavailableError)
-        return { plan: null, description: null, route: null };
-      const msg = err instanceof Error ? err.message : String(err);
-      console.warn(
-        `⚠️  QueryPlan soft-failed (falling through to semantic): ${msg}`,
-      );
-      return { plan: null, description: null, route: null };
     }
+
+    // Exhausted all attempts on validation failures. The model can't
+    // produce a clean plan for this question; semantic search will.
+    console.warn(
+      `⚠️  plan-gen exhausted ${MAX_RETRIES + 1} attempts → semantic fallback`,
+    );
+    return SEMANTIC_FALLBACK;
   },
 
   async warmUp(): Promise<void> {
@@ -133,6 +180,50 @@ function parseRoute(raw: unknown): RetrievalScope | null {
   if (raw == null) return null;
   const parsed = retrievalScopeSchema.safeParse(raw);
   return parsed.success ? parsed.data : null;
+}
+
+// ─── Retry prompt ────────────────────────────────
+
+/**
+ * On validation failure, append a "you got it wrong, here's how" block
+ * to the prompt. Showing the model its own bad output + the specific
+ * error tends to fix it on the first retry — much more reliable than
+ * just re-asking with the same prompt.
+ */
+function buildRetryPrompt(
+  question: string,
+  bad: { plan: unknown; error: z.ZodError },
+): string {
+  const errSummary = bad.error.errors
+    .slice(0, 5)
+    .map((e) => `  - ${e.path.join(".") || "(root)"}: ${e.message}`)
+    .join("\n");
+
+  return [
+    buildPrompt(question),
+    ``,
+    `=== YOUR PREVIOUS ATTEMPT FAILED VALIDATION ===`,
+    ``,
+    `You returned this plan, which was rejected:`,
+    JSON.stringify(bad.plan, null, 2),
+    ``,
+    `Validation errors:`,
+    errSummary,
+    ``,
+    `RULES TO FOLLOW THIS TIME:`,
+    `1. Column names must be plain identifiers like "external_updated_at"`,
+    `   or jsonb paths like "state->>status_name". NO quotes, commas,`,
+    `   colons, spaces, or semicolons inside a column name.`,
+    `2. order_by.column must be exactly one of:`,
+    `     external_created_at, external_updated_at, title,`,
+    `     state->>completed_at, state->>priority,`,
+    `     state->>status_name, state->>assignee_name`,
+    `3. Each JSON property is a SEPARATE key. Never embed a key=value`,
+    `   pair inside another property's string value.`,
+    `4. Use double quotes only — never single quotes inside JSON.`,
+    ``,
+    `Re-emit a corrected plan now.`,
+  ].join("\n");
 }
 
 // ─── Prompt ──────────────────────────────────────
@@ -188,9 +279,20 @@ function buildPrompt(question: string): string {
     ``,
     `=== PLAN SHAPE ===`,
     ``,
+    `REQUIRED in every entities-table SELECT:`,
+    `  external_id, title, external_url, state, external_created_at, external_updated_at`,
+    ``,
+    `  • external_created_at is when the ticket was FILED in Linear. Use it`,
+    `    to answer "created today / this week / yesterday".`,
+    `  • external_updated_at is the LAST ACTIVITY timestamp.`,
+    `  • Never use the internal "created_at" or "updated_at" columns — those`,
+    `    are when WE first synced the row, not when Linear created it.`,
+    `  • If you filter on a date column, you MUST also include it in select`,
+    `    so the answer can reference the date.`,
+    ``,
     `{`,
     `  "table": "entities",              // always entities for ticket queries`,
-    `  "select": "id, external_id, title, external_url, state",`,
+    `  "select": "id, external_id, title, external_url, state, external_created_at, external_updated_at",`,
     `  "filters": [                      // list of filter ops (all AND'd together)`,
     `    { "op": "eq",      "column": "state->>status_name", "value": "In Progress" },`,
     `    { "op": "in",      "column": "state->>priority",    "values": ["1", "2"] },`,
@@ -268,13 +370,24 @@ function buildPrompt(question: string): string {
     ``,
     `=== DATE HANDLING (today = ${today}) ===`,
     ``,
-    `  "today"      → gte state->>completed_at ${today}T00:00:00Z`,
-    `                  lte state->>completed_at ${today}T23:59:59Z`,
-    `  "this week"  → gte state->>completed_at <Monday of this week T00:00:00Z>`,
-    `  "yesterday"  → gte / lte yesterday bounds`,
-    `  "last 7 days"→ gte state->>completed_at (today - 7) T00:00:00Z`,
-    `  Use external_created_at for "when filed", external_updated_at for`,
-    `  "last activity", state->>completed_at for "when done".`,
+    `Pick the date column based on the question's verb:`,
+    `  • "created today" / "filed today" / "opened today" / "new today"`,
+    `      → external_created_at`,
+    `  • "updated today" / "changed today" / "touched today" / "active today"`,
+    `      → external_updated_at`,
+    `  • "completed today" / "closed today" / "finished today" / "done today"`,
+    `      → state->>completed_at`,
+    ``,
+    `Date range patterns:`,
+    `  "today"       → gte <COL> ${today}T00:00:00Z`,
+    `                   lte <COL> ${today}T23:59:59Z`,
+    `  "yesterday"   → gte / lte yesterday bounds`,
+    `  "this week"   → gte <COL> <Monday of this week T00:00:00Z>`,
+    `  "last 7 days" → gte <COL> (today - 7) T00:00:00Z`,
+    ``,
+    `When you filter on external_created_at or external_updated_at, the`,
+    `column is already in the required SELECT list above — no extra step.`,
+    `When you filter on state->>completed_at, also add it to select.`,
     ``,
     `=== EXAMPLES ===`,
     ``,
@@ -285,7 +398,10 @@ function buildPrompt(question: string): string {
     `A: {"plan":{"table":"entities","select":"external_id, title, state","filters":[],"limit":100},"description":"Fetch all tickets; synthesizer reports the count."}`,
     ``,
     `Q: "tickets rona completed today"`,
-    `A: {"plan":{"table":"entities","select":"id, external_id, title, external_url, state","filters":[{"op":"eq","column":"state->>status","value":"completed"},{"op":"ilike","column":"state->>assignee_name","value":"%rona%"},{"op":"gte","column":"state->>completed_at","value":"${today}T00:00:00Z"},{"op":"lte","column":"state->>completed_at","value":"${today}T23:59:59Z"}],"order_by":{"column":"external_updated_at","ascending":false},"limit":50},"description":"List tickets rona completed today."}`,
+    `A: {"plan":{"table":"entities","select":"id, external_id, title, external_url, state, external_created_at, external_updated_at, state->>completed_at","filters":[{"op":"eq","column":"state->>status","value":"completed"},{"op":"ilike","column":"state->>assignee_name","value":"%rona%"},{"op":"gte","column":"state->>completed_at","value":"${today}T00:00:00Z"},{"op":"lte","column":"state->>completed_at","value":"${today}T23:59:59Z"}],"order_by":{"column":"external_updated_at","ascending":false},"limit":50},"description":"List tickets rona completed today."}`,
+    ``,
+    `Q: "any priority ticket created today"`,
+    `A: {"plan":{"table":"entities","select":"id, external_id, title, external_url, state, external_created_at, external_updated_at","filters":[{"op":"gt","column":"state->>priority","value":"0"},{"op":"gte","column":"external_created_at","value":"${today}T00:00:00Z"},{"op":"lte","column":"external_created_at","value":"${today}T23:59:59Z"}],"order_by":{"column":"external_created_at","ascending":false},"limit":50},"description":"Tickets with non-zero priority filed today."}`,
     ``,
     `Q: "total completed by assignee"`,
     `A: {"plan":{"table":"entities","select":"id, state","filters":[{"op":"eq","column":"state->>status","value":"completed"}],"group_by":"state->>assignee_name","limit":100},"description":"Completed ticket count grouped by assignee."}`,
