@@ -8,6 +8,8 @@ import { env } from "../config/env";
 import {
   queryPlanSchema,
   retrievalScopeSchema,
+  planModeSchema,
+  PlanMode,
   QUERY_PLAN_RESPONSE_JSON_SCHEMA,
 } from "../lib/validations/query-plan.schema";
 import { QueryPlan, RetrievalScope } from "../lib/types/query-plan.types";
@@ -38,13 +40,24 @@ import { QueryPlan, RetrievalScope } from "../lib/types/query-plan.types";
  */
 
 export interface QueryPlanResult {
+  /**
+   * The model's routing decision. The orchestrator dispatches on this:
+   *   sql      → run the SQL plan only
+   *   semantic → run semantic retrieval only (using `route` as a hint)
+   *   hybrid   → run both in parallel, synthesize from both
+   *
+   * Self-contradiction handling is done in this service before the
+   * result leaves: if the model says `sql` but emits `plan: null`, we
+   * downgrade to `semantic`; if `hybrid` with `plan: null`, the
+   * orchestrator substitutes a default broad plan.
+   */
+  mode: PlanMode;
   plan: QueryPlan | null;
   description: string | null;
   /**
-   * Retrieval-scope hint emitted by the Pro model when `plan` is null.
-   * Null when the plan is non-null (SQL path doesn't need routing) or
-   * when the model omitted it (old schema, parse failure, etc.). The
-   * semantic path treats null as "unknown → fire all sources".
+   * Retrieval-scope hint. Used on semantic and hybrid paths to narrow
+   * the source fan-out. Null = "fire all sources" (today's behavior on
+   * unknown / low-confidence routing).
    */
   route: RetrievalScope | null;
 }
@@ -53,6 +66,7 @@ export interface QueryPlanResult {
 const MAX_RETRIES = 2;
 
 const SEMANTIC_FALLBACK: QueryPlanResult = {
+  mode: "semantic",
   plan: null,
   description: null,
   route: null,
@@ -71,6 +85,7 @@ export const QueryPlanService = {
           : buildPrompt(question);
 
         const raw = await callGeminiJson<{
+          mode?: unknown;
           plan: unknown;
           description?: string | null;
           route?: unknown;
@@ -86,21 +101,40 @@ export const QueryPlanService = {
         });
 
         const route = parseRoute(raw.route);
+        const mode = parseMode(raw.mode);
+        const description = raw.description?.trim() || null;
 
-        // Plan-null short-circuit. The model decided this is a content
-        // question — no SQL, no validation needed, route hint guides the
-        // semantic retriever.
-        if (raw.plan == null) {
+        // Resolve mode against the actual plan emitted. The model
+        // sometimes contradicts itself (e.g. mode=sql but plan=null).
+        // Normalize before returning so the orchestrator gets a
+        // self-consistent dispatch signal.
+        const resolved = resolveMode(mode, raw.plan);
+
+        if (resolved.mode === "semantic") {
           const routeLog = route
             ? ` route=${route.domain}/${route.confidence.toFixed(2)}`
             : "";
           console.log(
-            `🧾 plan-gen: ${JSON.stringify(question)} → null (semantic)${routeLog}`,
+            `🧾 plan-gen: ${JSON.stringify(question)} → semantic${routeLog}`,
+          );
+          return { mode: "semantic", plan: null, description, route };
+        }
+
+        // sql or hybrid → if a plan was emitted, validate it. If not,
+        // hybrid uses a default plan (handled in the orchestrator) and
+        // sql falls through to semantic (resolveMode already downgraded
+        // that case).
+        if (raw.plan == null) {
+          // Only reachable for resolved.mode === "hybrid" — plan-less
+          // hybrid is allowed; the orchestrator substitutes a default.
+          console.log(
+            `🧾 plan-gen: ${JSON.stringify(question)} → hybrid (no plan; default will be used) route=${route?.domain ?? "linear"}`,
           );
           return {
+            mode: "hybrid",
             plan: null,
-            description: raw.description?.trim() || null,
-            route,
+            description,
+            route: route ?? { domain: "linear", confidence: 0.9 },
           };
         }
 
@@ -112,14 +146,15 @@ export const QueryPlanService = {
             );
           }
           console.log(
-            `🧾 plan-gen: ${JSON.stringify(question)} → ${JSON.stringify(parsed.data)}`,
+            `🧾 plan-gen: ${JSON.stringify(question)} → ${resolved.mode} ${JSON.stringify(parsed.data)}`,
           );
           return {
+            mode: resolved.mode,
             plan: parsed.data,
-            description: raw.description?.trim() || null,
-            // Route is meaningful only on the semantic path — ignore any
-            // value the model might have emitted alongside a non-null plan.
-            route: null,
+            description,
+            // Route is used by hybrid (to narrow semantic fan-out) and
+            // ignored by sql.
+            route: resolved.mode === "hybrid" ? route : null,
           };
         }
 
@@ -182,6 +217,37 @@ function parseRoute(raw: unknown): RetrievalScope | null {
   return parsed.success ? parsed.data : null;
 }
 
+// ─── Mode parsing + self-contradiction ──────────
+
+/**
+ * Parse the `mode` field. Bad / missing → "semantic" (the safest
+ * default — every question can be answered from semantic search).
+ */
+function parseMode(raw: unknown): PlanMode {
+  const parsed = planModeSchema.safeParse(raw);
+  return parsed.success ? parsed.data : "semantic";
+}
+
+/**
+ * Reconcile the model's claimed mode with the plan it actually emitted.
+ *
+ *   sql      + plan present → sql      (consistent)
+ *   sql      + plan null    → semantic (model contradicted itself, fall back)
+ *   hybrid   + plan present → hybrid   (consistent)
+ *   hybrid   + plan null    → hybrid   (orchestrator uses default plan)
+ *   semantic + plan present → semantic (the plan is unused; the model meant content)
+ *   semantic + plan null    → semantic (consistent)
+ */
+function resolveMode(mode: PlanMode, plan: unknown): { mode: PlanMode } {
+  if (mode === "sql" && plan == null) {
+    console.warn(
+      `⚠️  plan-gen: model claimed mode=sql but emitted plan=null; downgrading to semantic`,
+    );
+    return { mode: "semantic" };
+  }
+  return { mode };
+}
+
 // ─── Retry prompt ────────────────────────────────
 
 /**
@@ -232,9 +298,51 @@ function buildPrompt(question: string): string {
   const today = new Date().toISOString().slice(0, 10);
   return [
     `You convert natural-language questions about Linear tickets into a`,
-    `structured Supabase query plan. If the question isn't answerable from`,
-    `structured ticket data (content questions, "what was discussed about X",`,
-    `"summarize Y"), return {"plan": null}.`,
+    `structured Supabase query plan AND a routing decision.`,
+    ``,
+    `=== ROUTING — PICK ONE MODE ===`,
+    ``,
+    `You MUST set "mode" to one of: "sql" | "semantic" | "hybrid".`,
+    ``,
+    `mode = "sql"      → pure structural query. The answer is in DB columns.`,
+    `                    Counts, lists with filters, exact lookups.`,
+    `                    Emit a "plan" object.`,
+    `                    Examples:`,
+    `                      "how many tickets in progress"`,
+    `                      "tickets rona completed today"`,
+    `                      "urgent tickets on rohan's plate"`,
+    `                      "total completed by assignee"`,
+    ``,
+    `mode = "semantic" → pure content / discussion / code question.`,
+    `                    Answer lives in chat, code files, or one ticket's`,
+    `                    free-text body / comments. Emit "plan": null.`,
+    `                    Examples:`,
+    `                      "what did rona say about the deploy?"      (chat)`,
+    `                      "where is the cart discount logic?"          (code)`,
+    `                      "what was discussed about auth lately?"      (chat / mixed)`,
+    `                      "explain the auth ticket"                     (ONE ticket's content)`,
+    `                      "summarize the discussion on BRA-7"           (comments)`,
+    ``,
+    `mode = "hybrid"   → open-ended question about MANY tickets where the`,
+    `                    answer benefits from BOTH structural rows AND`,
+    `                    ticket comments / discussion. Emit a "plan" object`,
+    `                    (downstream we also fetch semantic context in parallel).`,
+    `                    Examples:`,
+    `                      "explain all tickets in linear"`,
+    `                      "give me an overview of what we have"`,
+    `                      "summarize what's going on with auth tickets"`,
+    `                      "describe the open tickets"`,
+    `                      "what's the state of the project"`,
+    ``,
+    `How to decide:`,
+    `  • One specific ticket / off-table content → semantic`,
+    `  • Many tickets, structural answer (count, filter, list)  → sql`,
+    `  • Many tickets, open-ended verb (explain, summarize,`,
+    `    describe, overview, "what's going on")                 → hybrid`,
+    ``,
+    `When in doubt between sql and hybrid, prefer hybrid — the synthesizer`,
+    `gets richer context. When in doubt between hybrid and semantic, prefer`,
+    `hybrid — at worst it adds a cheap row fetch.`,
     ``,
     `=== SCHEMA ===`,
     ``,
@@ -391,52 +499,61 @@ function buildPrompt(question: string): string {
     ``,
     `=== EXAMPLES ===`,
     ``,
-    `Q: "how many tickets in in-progress?"`,
-    `A: {"plan":{"table":"entities","select":"external_id, title, state","filters":[{"op":"eq","column":"state->>status_name","value":"In Progress"}],"limit":100},"description":"Fetch In Progress tickets; synthesizer counts + lists them."}`,
+    `── sql examples (structural — count, list with filter, exact match) ──`,
     ``,
-    `Q: "how many tickets overall"`,
-    `A: {"plan":{"table":"entities","select":"external_id, title, state","filters":[],"limit":100},"description":"Fetch all tickets; synthesizer reports the count."}`,
+    `Q: "how many tickets in in-progress?"`,
+    `A: {"mode":"sql","plan":{"table":"entities","select":"external_id, title, state","filters":[{"op":"eq","column":"state->>status_name","value":"In Progress"}],"limit":100},"description":"Fetch In Progress tickets; synthesizer counts + lists them."}`,
     ``,
     `Q: "tickets rona completed today"`,
-    `A: {"plan":{"table":"entities","select":"id, external_id, title, external_url, state, external_created_at, external_updated_at, state->>completed_at","filters":[{"op":"eq","column":"state->>status","value":"completed"},{"op":"ilike","column":"state->>assignee_name","value":"%rona%"},{"op":"gte","column":"state->>completed_at","value":"${today}T00:00:00Z"},{"op":"lte","column":"state->>completed_at","value":"${today}T23:59:59Z"}],"order_by":{"column":"external_updated_at","ascending":false},"limit":50},"description":"List tickets rona completed today."}`,
+    `A: {"mode":"sql","plan":{"table":"entities","select":"id, external_id, title, external_url, state, external_created_at, external_updated_at, state->>completed_at","filters":[{"op":"eq","column":"state->>status","value":"completed"},{"op":"ilike","column":"state->>assignee_name","value":"%rona%"},{"op":"gte","column":"state->>completed_at","value":"${today}T00:00:00Z"},{"op":"lte","column":"state->>completed_at","value":"${today}T23:59:59Z"}],"order_by":{"column":"external_updated_at","ascending":false},"limit":50},"description":"List tickets rona completed today."}`,
     ``,
     `Q: "any priority ticket created today"`,
-    `A: {"plan":{"table":"entities","select":"id, external_id, title, external_url, state, external_created_at, external_updated_at","filters":[{"op":"gt","column":"state->>priority","value":"0"},{"op":"gte","column":"external_created_at","value":"${today}T00:00:00Z"},{"op":"lte","column":"external_created_at","value":"${today}T23:59:59Z"}],"order_by":{"column":"external_created_at","ascending":false},"limit":50},"description":"Tickets with non-zero priority filed today."}`,
+    `A: {"mode":"sql","plan":{"table":"entities","select":"id, external_id, title, external_url, state, external_created_at, external_updated_at","filters":[{"op":"gt","column":"state->>priority","value":"0"},{"op":"gte","column":"external_created_at","value":"${today}T00:00:00Z"},{"op":"lte","column":"external_created_at","value":"${today}T23:59:59Z"}],"order_by":{"column":"external_created_at","ascending":false},"limit":50},"description":"Tickets with non-zero priority filed today."}`,
     ``,
     `Q: "total completed by assignee"`,
-    `A: {"plan":{"table":"entities","select":"id, state","filters":[{"op":"eq","column":"state->>status","value":"completed"}],"group_by":"state->>assignee_name","limit":100},"description":"Completed ticket count grouped by assignee."}`,
+    `A: {"mode":"sql","plan":{"table":"entities","select":"id, state","filters":[{"op":"eq","column":"state->>status","value":"completed"}],"group_by":"state->>assignee_name","limit":100},"description":"Completed ticket count grouped by assignee."}`,
     ``,
     `Q: "urgent or high tickets on rohan's plate"`,
-    `A: {"plan":{"table":"entities","select":"id, external_id, title, state","filters":[{"op":"in","column":"state->>priority","values":["1","2"]},{"op":"ilike","column":"state->>assignee_name","value":"%rohan%"},{"op":"in","column":"state->>status","values":["backlog","unstarted","started"]}],"order_by":{"column":"state->>priority","ascending":true},"limit":50},"description":"List urgent/high open tickets for rohan."}`,
+    `A: {"mode":"sql","plan":{"table":"entities","select":"id, external_id, title, state","filters":[{"op":"in","column":"state->>priority","values":["1","2"]},{"op":"ilike","column":"state->>assignee_name","value":"%rohan%"},{"op":"in","column":"state->>status","values":["backlog","unstarted","started"]}],"order_by":{"column":"state->>priority","ascending":true},"limit":50},"description":"List urgent/high open tickets for rohan."}`,
+    ``,
+    `── hybrid examples (open-ended on many tickets — needs both rows + comments) ──`,
+    ``,
+    `Q: "explain all tickets in linear" / "give me an overview"`,
+    `A: {"mode":"hybrid","plan":{"table":"entities","select":"external_id, title, external_url, state, external_created_at, external_updated_at","filters":[],"order_by":{"column":"external_updated_at","ascending":false},"limit":100},"description":"Fetch all rows; semantic adds comment context.","route":{"domain":"linear","confidence":0.95}}`,
+    ``,
+    `Q: "summarize what's going on with auth tickets"`,
+    `A: {"mode":"hybrid","plan":{"table":"entities","select":"external_id, title, external_url, state, external_created_at, external_updated_at","filters":[{"op":"ilike","column":"title","value":"%auth%"}],"order_by":{"column":"external_updated_at","ascending":false},"limit":50},"description":"Fetch auth-titled tickets; semantic surfaces auth-mention comments.","route":{"domain":"linear","confidence":0.9}}`,
+    ``,
+    `Q: "describe the open tickets"`,
+    `A: {"mode":"hybrid","plan":{"table":"entities","select":"external_id, title, external_url, state, external_created_at, external_updated_at","filters":[{"op":"in","column":"state->>status","values":["backlog","unstarted","started"]}],"order_by":{"column":"external_updated_at","ascending":false},"limit":100},"description":"Open rows + semantic for narrative context.","route":{"domain":"linear","confidence":0.9}}`,
+    ``,
+    `── semantic examples (content / discussion / single-ticket / code) ──`,
     ``,
     `Q: "what was discussed about auth lately?"`,
-    `A: {"plan":null,"description":"Content question — route to semantic search.","route":{"domain":"mixed","confidence":0.7}}`,
+    `A: {"mode":"semantic","plan":null,"description":"Off-table discussion.","route":{"domain":"mixed","confidence":0.7}}`,
     ``,
-    `=== RETRIEVAL ROUTE (only when plan is null) ===`,
+    `Q: "explain the auth ticket" / "summarize the discussion on BRA-7"`,
+    `A: {"mode":"semantic","plan":null,"description":"One ticket's content lives in comments — semantic pulls them.","route":{"domain":"linear","confidence":0.85}}`,
     ``,
-    `When you return {"plan": null}, ALSO return a "route" hint telling`,
-    `the semantic retriever which knowledge surface the question lives on:`,
+    `Q: "find the cart discount logic"`,
+    `A: {"mode":"semantic","plan":null,"description":"Code lookup.","route":{"domain":"code","confidence":0.95}}`,
     ``,
+    `Q: "what did rona say about the deploy yesterday?"`,
+    `A: {"mode":"semantic","plan":null,"description":"Chat history lookup.","route":{"domain":"chat","confidence":0.9}}`,
+    ``,
+    `Q: "how did we decide on cloudfront vs route53?"`,
+    `A: {"mode":"semantic","plan":null,"description":"Could be tickets or chat.","route":{"domain":"mixed","confidence":0.7}}`,
+    ``,
+    `=== RETRIEVAL ROUTE (used by semantic AND hybrid) ===`,
+    ``,
+    `When mode is "semantic" or "hybrid", include a "route" hint:`,
     `  "linear" — about tickets or ticket comments`,
     `  "code"   — about source files, functions, implementation`,
     `  "chat"   — about what someone said in team conversations`,
     `  "mixed"  — straddles tickets + chat (not code)`,
     ``,
     `confidence is 0..1. Use >= 0.8 only when you are genuinely sure.`,
-    `If uncertain, pick the closest domain with low confidence — the`,
-    `retriever falls back to searching everything when confidence is low.`,
-    ``,
-    `When you return a non-null plan, OMIT the "route" field — the plan`,
-    `already names its source.`,
-    ``,
-    `Q: "find the cart discount logic"`,
-    `A: {"plan":null,"description":"Code lookup.","route":{"domain":"code","confidence":0.95}}`,
-    ``,
-    `Q: "what did rona say about the deploy yesterday?"`,
-    `A: {"plan":null,"description":"Chat history lookup.","route":{"domain":"chat","confidence":0.9}}`,
-    ``,
-    `Q: "how did we decide on cloudfront vs route53?"`,
-    `A: {"plan":null,"description":"Could be tickets or chat.","route":{"domain":"mixed","confidence":0.7}}`,
+    `When mode is "sql", the route field is ignored — you can omit it.`,
     ``,
     `Q: ${JSON.stringify(question)}`,
   ].join("\n");

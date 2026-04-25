@@ -10,7 +10,7 @@ import { SourceName } from "../retrieval-scope";
  * structured-log sink we add later (Datadog, Loki, BigQuery, etc.) with
  * zero parsing.
  */
-export type AskPath = "ticket_id" | "sql" | "semantic";
+export type AskPath = "ticket_id" | "sql" | "semantic" | "hybrid";
 
 export interface PlanEvent {
   hasPlan: boolean;

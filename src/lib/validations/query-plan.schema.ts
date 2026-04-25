@@ -105,6 +105,19 @@ export const retrievalScopeSchema = z
   .strict();
 
 /**
+ * The model's routing decision. Three explicit modes instead of inferring
+ * from `plan != null` / `plan == null`. This lets the model emit
+ * `mode: "hybrid"` for questions that benefit from BOTH structural rows
+ * (counts, dates, statuses) AND semantic context (comments, discussion).
+ *
+ *   sql      — pure structural: count, list-with-filter, exact lookup.
+ *   semantic — pure content / chat / code / single-ticket comments.
+ *   hybrid   — open-ended ticket questions; run both paths in parallel.
+ */
+export const planModeSchema = z.enum(["sql", "semantic", "hybrid"]);
+export type PlanMode = z.infer<typeof planModeSchema>;
+
+/**
  * JSON schema sent to Gemini (matches `queryPlanSchema`). Generative
  * Language API enforces this structure on the response — the `pattern`
  * and `enum` constraints below are the FIRST line of defense, blocking
@@ -113,6 +126,10 @@ export const retrievalScopeSchema = z
 export const QUERY_PLAN_RESPONSE_JSON_SCHEMA = {
   type: "object",
   properties: {
+    mode: {
+      type: "string",
+      enum: ["sql", "semantic", "hybrid"],
+    },
     plan: {
       type: "object",
       nullable: true,
@@ -194,5 +211,5 @@ export const QUERY_PLAN_RESPONSE_JSON_SCHEMA = {
       required: ["domain", "confidence"],
     },
   },
-  required: ["plan"],
+  required: ["mode", "plan"],
 } as const;

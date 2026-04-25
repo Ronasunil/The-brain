@@ -12,6 +12,25 @@ import {
 } from "../../lib/constants/app.constants";
 
 /**
+ * Used in the hybrid path when the model says `mode: "hybrid"` but
+ * doesn't emit a specific plan. Fetches the most-recently-active 100
+ * tickets so the synthesizer always has SOME structural data to talk
+ * about — beats the alternative of falling back to semantic-only and
+ * losing the structural signal entirely.
+ */
+export function defaultLinearPlan(): QueryPlan {
+  return {
+    table: "entities",
+    select:
+      "external_id, title, external_url, state, external_created_at, external_updated_at",
+    filters: [],
+    order_by: { column: "external_updated_at", ascending: false },
+    limit: 100,
+    group_by: null,
+  };
+}
+
+/**
  * SQL retrieval — execute the validated plan against the DB. On any
  * failure (bad column, timeout, throttle) we return `ok: false` so the
  * orchestrator can fall through to the semantic path. Never throws.

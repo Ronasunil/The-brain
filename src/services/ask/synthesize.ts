@@ -124,6 +124,63 @@ export async function synthesizeFromSemantic(args: {
   };
 }
 
+/**
+ * Hybrid path synthesizer. Combines structural rows from SQL with the
+ * reranked semantic pool (entity comments, manual facts, etc.) in a
+ * single LLM call. The synthesizer treats SQL rows as authoritative
+ * facts and lets semantic context add color (comments, related chat).
+ *
+ * The output `sources` blend SQL row sources first (high-confidence
+ * structural matches) with the merged semantic sources after.
+ */
+export async function synthesizeHybrid(args: {
+  question: string;
+  sql: Extract<SqlResult, { ok: true }>;
+  merged: MergedResults;
+}): Promise<{ answer: BrainAnswer; ok: boolean; sqlRows: number; semanticHits: number }> {
+  const aggregationCtx = buildAggregationContext({
+    rows: args.sql.rows,
+    buckets: args.sql.buckets,
+  });
+
+  const messageResults = extractMessages(args.merged.ranked);
+  const codeResults = extractCode(args.merged.ranked);
+
+  const searchResults: SearchResult[] = [
+    ...args.merged.manualResults,
+    ...messageResults,
+  ];
+
+  const { text, ok } = await safeSynth({
+    question: args.question,
+    searchResults,
+    groundTruthFacts:
+      args.merged.manualResults.length > 0
+        ? args.merged.manualResults
+        : undefined,
+    codeResults: codeResults.length > 0 ? codeResults : undefined,
+    aggregationCtx,
+  });
+
+  // Blend sources: SQL rows first (always 1.0 similarity, structural
+  // ground truth), then the reranked semantic pool. Dedupe on URL since
+  // a ticket might appear in both.
+  const sqlSrc = buildSqlSources(args.sql.rows);
+  const semSrc = buildSources(args.merged.manualResults, args.merged.ranked);
+  const seen = new Set(sqlSrc.map((s) => s.content));
+  const blended = [
+    ...sqlSrc,
+    ...semSrc.filter((s) => !seen.has(s.content)),
+  ];
+
+  return {
+    answer: { answer: text, sources: blended },
+    ok,
+    sqlRows: args.sql.rows.length,
+    semanticHits: searchResults.length + codeResults.length,
+  };
+}
+
 // ─── Internals ──────────────────────────────────
 
 function extractMessages(ranked: UnifiedResult[]): SearchResult[] {
