@@ -1,7 +1,10 @@
 import { Router } from "express";
 import { LinearController } from "../controllers/linear.controller";
 import { authenticate, validateBody } from "../lib/middleware";
-import { linearConnectSchema } from "../lib/validations/linear.schema";
+import {
+  linearConnectSchema,
+  linearUpdateIssueSchema,
+} from "../lib/validations/linear.schema";
 
 /**
  * Two routers are exported:
@@ -38,6 +41,21 @@ linearAuthRouter.post(
   "/:id/resync",
   authenticate as any,
   LinearController.resync,
+);
+
+// Inline-edit a Linear ticket from the chat card.
+linearAuthRouter.patch(
+  "/:integrationId/issues/:issueId",
+  authenticate as any,
+  validateBody(linearUpdateIssueSchema),
+  LinearController.updateIssue,
+);
+
+// Dropdown choices the chat card needs (assignees, priorities, states).
+linearAuthRouter.get(
+  "/:integrationId/teams/:teamId/options",
+  authenticate as any,
+  LinearController.getTeamOptions,
 );
 
 const linearPublicRouter = Router();

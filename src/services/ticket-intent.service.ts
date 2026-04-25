@@ -1,8 +1,8 @@
 import {
-  callVertexJson,
-  isVertexConfigured,
-  VertexUnavailableError,
-} from "../providers/vertex-ai.helper";
+  callGeminiJson,
+  isGeminiConfigured,
+  GeminiUnavailableError,
+} from "../providers/gemini.helper";
 import {
   ticketIntentSchema,
   TICKET_INTENT_RESPONSE_JSON_SCHEMA,
@@ -15,9 +15,9 @@ export type TicketIntent =
 /**
  * Ticket-Intent Service
  *
- * A Gemini 2.5 Flash-Lite classifier that decides whether an @brain message
- * is asking to create a new Linear ticket. Runs alongside AggregationService —
- * callers invoke both in parallel on every @brain message. If this returns
+ * A Gemini classifier that decides whether an @brain message is asking to
+ * create a new Linear ticket. Runs alongside AggregationService — callers
+ * invoke both in parallel on every @brain message. If this returns
  * create_ticket, the message is routed to TicketCreationService.
  *
  * Mirrors AggregationService in structure: safe-to-call (graceful fallback on
@@ -26,25 +26,24 @@ export type TicketIntent =
 export const TicketIntentService = {
   /**
    * Classify a user message. Returns { intent: "other" } on any failure —
-   * Vertex not configured, timeout, malformed JSON, Zod rejection — so
+   * Gemini not configured, timeout, malformed JSON, Zod rejection — so
    * callers treat it as never-throws.
    */
   async classify(question: string): Promise<TicketIntent> {
-    if (!isVertexConfigured()) return { intent: "other" };
+    if (!isGeminiConfigured()) return { intent: "other" };
 
     const prompt = buildPrompt(question);
 
     try {
-      const raw = await callVertexJson<unknown>({
+      const raw = await callGeminiJson<unknown>({
         prompt,
         responseSchema: TICKET_INTENT_RESPONSE_JSON_SCHEMA as unknown as Record<
           string,
           unknown
         >,
-        // 20s — Flash-Lite usually answers in 500–2000ms, but Vertex can
-        // occasionally lag under load. The fallback to {intent:"other"}
-        // is graceful for the user, so we'd rather wait a little longer
-        // than spam aborts.
+        // 20s — direct Gemini API answers in 400–1500ms typically. Ample
+        // headroom for transient slowness. Fallback to {intent:"other"}
+        // is graceful, so we'd rather wait than emit aborts.
         timeoutMs: 20_000,
       });
 
@@ -66,7 +65,7 @@ export const TicketIntentService = {
       }
       return { intent: "other" };
     } catch (err) {
-      if (err instanceof VertexUnavailableError) return { intent: "other" };
+      if (err instanceof GeminiUnavailableError) return { intent: "other" };
       // Expected degradation path — fall through to @brain Q&A without noise.
       // Keep it one line; no stack trace.
       const msg = err instanceof Error ? err.message : String(err);
@@ -76,13 +75,13 @@ export const TicketIntentService = {
   },
 
   /**
-   * Fire a trivial Vertex request at server boot so the first real chat
+   * Fire a trivial Gemini request at server boot so the first real chat
    * message doesn't pay the cold-start cost. Silent on failure.
    */
   async warmUp(): Promise<void> {
-    if (!isVertexConfigured()) return;
+    if (!isGeminiConfigured()) return;
     try {
-      await callVertexJson<unknown>({
+      await callGeminiJson<unknown>({
         prompt: 'Return the JSON: { "intent": "other" }',
         responseSchema: {
           type: "object",

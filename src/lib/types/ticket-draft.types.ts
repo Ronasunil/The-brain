@@ -1,13 +1,11 @@
-import type {
-  LinearTeam,
-  LinearUserRef,
-} from "../../providers/linear.provider";
+import type { LinearTeam } from "../../providers/linear.provider";
 
-export type DraftStage =
-  | "awaiting_team"
-  | "awaiting_priority"
-  | "awaiting_assignee"
-  | "creating";
+/**
+ * Ambiguity-only draft: kept solely for the "multi-team workspace, no
+ * history" case where we have to ask one question (which team?) before we
+ * can create the ticket. Once that's answered we go straight to creation.
+ */
+export type DraftStage = "awaiting_team";
 
 export interface TicketDraft {
   workspaceId: string;
@@ -20,14 +18,7 @@ export interface TicketDraft {
   title: string;
   description: string;
 
-  teamOptions?: LinearTeam[];
-  teamId?: string;
-  teamKey?: string;
-
-  priority?: 0 | 1 | 2 | 3 | 4;
-
-  userOptions?: LinearUserRef[];
-  assigneeId?: string | null;
+  teamOptions: LinearTeam[];
 
   createdAt: number;
   lastActivityAt: number;

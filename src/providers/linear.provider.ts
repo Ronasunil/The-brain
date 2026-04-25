@@ -38,6 +38,15 @@ export interface LinearWorkflowState {
   type: string;
 }
 
+export interface LinearUpdateIssueInput {
+  title?: string;
+  description?: string;
+  priority?: 0 | 1 | 2 | 3 | 4;
+  assigneeId?: string | null;
+  stateId?: string;
+  teamId?: string;
+}
+
 export interface LinearProject {
   id: string;
   name: string;
@@ -98,7 +107,7 @@ export interface LinearIssue {
   state: LinearWorkflowState;
   assignee: LinearUserRef | null;
   creator: LinearUserRef | null;
-  team: { id: string; key: string } | null;
+  team: { id: string; key: string; name?: string } | null;
   project: LinearProject | null;
   cycle: LinearCycle | null;
   labels: { nodes: LinearLabel[] };
@@ -129,7 +138,7 @@ const ISSUE_FIELDS = `
   state { id name type }
   assignee { id name email }
   creator { id name email }
-  team { id key }
+  team { id key name }
   project { id name }
   cycle { id number startsAt endsAt }
   labels { nodes { name } }
@@ -288,6 +297,28 @@ export const LinearProvider = {
     return data.issue;
   },
 
+  /**
+   * Fetch a single issue by Linear's internal UUID. Useful right after
+   * `createIssue`, which only returns a thin payload — this hydrates the
+   * full issue (state, assignee, team, etc.) for rendering in the card.
+   */
+  async getIssueById(
+    accessToken: string,
+    issueId: string,
+  ): Promise<LinearIssue | null> {
+    const query = `
+      query Issue($id: String!) {
+        issue(id: $id) { ${ISSUE_FIELDS} }
+      }
+    `;
+    const data = await graphql<{ issue: LinearIssue | null }>(
+      accessToken,
+      query,
+      { id: issueId },
+    );
+    return data.issue;
+  },
+
   async listTeams(accessToken: string): Promise<LinearTeam[]> {
     const data = await graphql<{ teams: { nodes: LinearTeam[] } }>(
       accessToken,
@@ -306,6 +337,33 @@ export const LinearProvider = {
       }`,
     );
     return data.users.nodes;
+  },
+
+  /**
+   * Linear workflow states are team-scoped. Pass the teamId to list only
+   * the states valid for that team; calling without one returns the full
+   * workspace set, which is useless for moving an issue between states.
+   */
+  async listWorkflowStates(
+    accessToken: string,
+    teamId: string,
+  ): Promise<LinearWorkflowState[]> {
+    const query = `
+      query WorkflowStates($teamId: ID!) {
+        workflowStates(
+          first: 50,
+          filter: { team: { id: { eq: $teamId } } }
+        ) {
+          nodes { id name type }
+        }
+      }
+    `;
+    const data = await graphql<{ workflowStates: { nodes: LinearWorkflowState[] } }>(
+      accessToken,
+      query,
+      { teamId },
+    );
+    return data.workflowStates.nodes;
   },
 
   async createIssue(
@@ -327,6 +385,32 @@ export const LinearProvider = {
       throw new AppError("Linear rejected issueCreate", 502);
     }
     return data.issueCreate.issue;
+  },
+
+  /**
+   * Patch an existing issue. Returns the fully hydrated issue so the caller
+   * can re-render the card without a follow-up fetch.
+   */
+  async updateIssue(
+    accessToken: string,
+    issueId: string,
+    input: LinearUpdateIssueInput,
+  ): Promise<LinearIssue> {
+    const mutation = `
+      mutation IssueUpdate($id: String!, $input: IssueUpdateInput!) {
+        issueUpdate(id: $id, input: $input) {
+          success
+          issue { ${ISSUE_FIELDS} }
+        }
+      }
+    `;
+    const data = await graphql<{
+      issueUpdate: { success: boolean; issue: LinearIssue | null };
+    }>(accessToken, mutation, { id: issueId, input });
+    if (!data.issueUpdate.success || !data.issueUpdate.issue) {
+      throw new AppError("Linear rejected issueUpdate", 502);
+    }
+    return data.issueUpdate.issue;
   },
 
   async listIssuesPage(

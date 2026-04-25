@@ -10,6 +10,10 @@ import {
   LinearIssue,
   LinearComment,
   LinearTokens,
+  LinearUpdateIssueInput,
+  LinearUserRef,
+  LinearWorkflowState,
+  LinearTeam,
 } from "../providers/linear.provider";
 import { EntityService } from "./entity.service";
 import {
@@ -404,6 +408,76 @@ export const LinearService = {
    * duplicating the decrypt+refresh plumbing.
    */
   getAccessToken,
+
+  // ─── Inline-edit support for the ticket card ─────
+
+  /**
+   * Patch a Linear issue and re-ingest the result so our local copy stays
+   * in sync without waiting for the webhook round-trip. The hydrated issue
+   * is returned so the caller can re-render the card immediately.
+   */
+  async updateIssue(
+    integration: Integration,
+    issueId: string,
+    input: LinearUpdateIssueInput,
+  ): Promise<LinearIssue> {
+    if (integration.type !== "linear") {
+      throw new AppError("Not a Linear integration", 400);
+    }
+    const token = await getAccessToken(integration);
+    const issue = await LinearProvider.updateIssue(token, issueId, input);
+
+    // Best-effort local re-ingest. If it fails the webhook will catch up.
+    try {
+      await LinearService.ingestIssue(integration.id, issue);
+    } catch (err: any) {
+      console.warn(
+        `Local re-ingest after updateIssue ${issueId} failed: ${err?.message ?? err}`,
+      );
+    }
+    return issue;
+  },
+
+  /**
+   * Bundle every dropdown the ticket card needs for a given team in one
+   * call: assignable users (workspace-wide), priorities (constant), and
+   * workflow states (team-scoped).
+   */
+  async getTeamOptions(
+    integration: Integration,
+    teamId: string,
+  ): Promise<{
+    team: LinearTeam | null;
+    assignableUsers: LinearUserRef[];
+    priorities: { value: 0 | 1 | 2 | 3 | 4; label: string }[];
+    workflowStates: LinearWorkflowState[];
+  }> {
+    if (integration.type !== "linear") {
+      throw new AppError("Not a Linear integration", 400);
+    }
+    const token = await getAccessToken(integration);
+
+    const [teams, users, states] = await Promise.all([
+      LinearProvider.listTeams(token),
+      LinearProvider.listWorkspaceUsers(token),
+      LinearProvider.listWorkflowStates(token, teamId),
+    ]);
+
+    const team = teams.find((t) => t.id === teamId) ?? null;
+
+    return {
+      team,
+      assignableUsers: users,
+      priorities: [
+        { value: 0, label: "No priority" },
+        { value: 1, label: "Urgent" },
+        { value: 2, label: "High" },
+        { value: 3, label: "Medium" },
+        { value: 4, label: "Low" },
+      ],
+      workflowStates: states,
+    };
+  },
 };
 
 // ─── Internal helpers ───────────────────────────

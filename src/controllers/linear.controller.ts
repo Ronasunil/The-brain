@@ -12,6 +12,7 @@ import { env } from "../config/env";
 import {
   LinearConnectPayload,
   LinearCallbackQuery,
+  LinearUpdateIssuePayload,
   linearWebhookSchema,
 } from "../lib/validations/linear.schema";
 
@@ -133,6 +134,51 @@ export const LinearController = {
       status: 202,
       data: null,
       message: "Linear resync started",
+    });
+  }),
+
+  /**
+   * PATCH /integrations/linear/:integrationId/issues/:issueId
+   * Authenticated. Inline-edit a Linear ticket from the chat card.
+   */
+  updateIssue: withErrorHandler(async (req: Request, res: Response) => {
+    const user = (req as AuthenticatedRequest).user;
+    const { integrationId, issueId } = req.params as {
+      integrationId: string;
+      issueId: string;
+    };
+
+    const integration = await IntegrationService.getById(integrationId, user.id);
+    const payload = (req as any).validatedBody as LinearUpdateIssuePayload;
+
+    const issue = await LinearService.updateIssue(integration, issueId, payload);
+
+    res.status(200).json({
+      status: 200,
+      data: issue,
+      message: "Linear ticket updated",
+    });
+  }),
+
+  /**
+   * GET /integrations/linear/:integrationId/teams/:teamId/options
+   * Authenticated. Returns the dropdown choices the ticket card needs:
+   * assignable users, priorities, workflow states (team-scoped).
+   */
+  getTeamOptions: withErrorHandler(async (req: Request, res: Response) => {
+    const user = (req as AuthenticatedRequest).user;
+    const { integrationId, teamId } = req.params as {
+      integrationId: string;
+      teamId: string;
+    };
+
+    const integration = await IntegrationService.getById(integrationId, user.id);
+    const options = await LinearService.getTeamOptions(integration, teamId);
+
+    res.status(200).json({
+      status: 200,
+      data: options,
+      message: "Linear team options",
     });
   }),
 

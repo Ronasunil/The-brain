@@ -75,6 +75,7 @@ export interface ChatMessage {
   role: "user" | "assistant";
   content: string;
   sources: BrainAnswerSource[] | null;
+  card: ChatCardPayload | null;
   created_at: Date;
 }
 
@@ -85,7 +86,45 @@ export interface CreateChatMessageInput {
   role: "user" | "assistant";
   content: string;
   sources?: BrainAnswerSource[] | null;
+  card?: ChatCardPayload | null;
 }
+
+/**
+ * A structured payload the frontend renders as a rich card next to (or in
+ * place of) the markdown `content`. Discriminated by `type` so we can grow
+ * new card kinds without breaking older clients.
+ */
+export type ChatCardPayload = LinearTicketCard;
+
+export interface LinearTicketCard {
+  type: "linear_ticket";
+  integrationId: string;
+  issue: LinearTicketCardIssue;
+  // Dropdown choices (assignable users, workflow states, etc.) live behind a
+  // dedicated endpoint instead of being baked into the card payload — they
+  // can be 5-10KB per workspace and would bloat every chat_messages row if
+  // persisted. Frontend fetches via GET /integrations/linear/:id/teams/:teamId/options
+  // on card mount, with a small client-side cache to avoid refetching across
+  // sibling cards in the same conversation.
+}
+
+export interface LinearTicketCardIssue {
+  id: string;
+  identifier: string;
+  url: string;
+  title: string;
+  description: string | null;
+  priority: 0 | 1 | 2 | 3 | 4;
+  priorityLabel: string;
+  status: { id: string; name: string; type: string } | null;
+  assignee: { id: string; name: string; email: string | null } | null;
+  team: { id: string; key: string; name: string };
+  createdAt: string;
+}
+
+// (LinearTicketCardOptions is no longer part of the card payload — the
+// frontend fetches it on demand. The shape returned by the options endpoint
+// is documented in LinearService.getTeamOptions.)
 
 /**
  * AI-generated answer with sources.

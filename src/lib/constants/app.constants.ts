@@ -42,6 +42,13 @@ export const FULLTEXT_SEARCH_LIMIT = 30;
 // ─── Code Search Constants ──────────────────────────────────
 export const CODE_SEARCH_RESULTS = 3;
 
+// ─── Domain Routing ─────────────────────────────────────────
+// Minimum confidence for the Pro model's domain hint to narrow the
+// semantic fan-out. Below this we fire all 8 sources (today's behavior).
+// Too low → false routing blinds the answer. Too high → feature inert.
+// Tune with log data after a week of real traffic.
+export const DOMAIN_ROUTING_MIN_CONFIDENCE = 0.8;
+
 // ─── Bot Constants ──────────────────────────────────────────────
 export const MAX_MESSAGE_LENGTH = 4096;
 export const MANUAL_RESERVED_SLOTS = 3;

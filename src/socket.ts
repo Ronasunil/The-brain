@@ -120,6 +120,7 @@ async function emitBotError(
       role: "assistant",
       content: message,
       sources: null,
+      card: null,
     });
     io.to(room).emit("chat:message", bot);
   } catch (persistErr) {
@@ -212,13 +213,14 @@ export function initSocketIO(httpServer: http.Server): Server {
           return;
         }
 
-        // 2. Active draft? Route this message as a stage response.
+        // 2. Active ambiguity draft (multi-team, no history) → resolve it.
         if (TicketCreationService.hasDraft(workspaceId, user.id)) {
           try {
             const bot = await TicketCreationService.handleResponse({
               workspaceId,
               userId: user.id,
               userName: user.name,
+              userEmail: user.email ?? null,
               content,
             });
             io.to(room).emit("chat:message", bot);
@@ -232,7 +234,7 @@ export function initSocketIO(httpServer: http.Server): Server {
         const ticket = extractTicketRequest(content);
         if (ticket) {
           try {
-            const bot = await TicketCreationService.startDraft({
+            const bot = await TicketCreationService.createInstant({
               workspaceId,
               userId: user.id,
               userName: user.name,
@@ -256,7 +258,7 @@ export function initSocketIO(httpServer: http.Server): Server {
           try {
             const intent = await TicketIntentService.classify(question);
             if (intent.intent === "create_ticket") {
-              const bot = await TicketCreationService.startDraft({
+              const bot = await TicketCreationService.createInstant({
                 workspaceId,
                 userId: user.id,
                 userName: user.name,

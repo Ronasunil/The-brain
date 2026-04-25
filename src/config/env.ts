@@ -41,35 +41,22 @@ const envSchema = z.object({
   LINEAR_CLIENT_SECRET: z.string().optional(),
   LINEAR_OAUTH_REDIRECT_URI: z.string().url().optional(),
 
-  // Vertex AI (Google Cloud) — used as a small classifier for aggregation
-  // intent in /brain/ask.
-  //
-  // Auth: set GCP_SERVICE_ACCOUNT_KEY_B64 to the base64-encoded contents of
-  // a service-account JSON key (with the "Vertex AI User" role). This is the
-  // preferred path because it works on any host that accepts env vars — no
-  // filesystem mount required (Cloud Run / Railway / Fly / Heroku / Render).
-  //
-  // Fallback: if GCP_SERVICE_ACCOUNT_KEY_B64 is unset, Google's Application
-  // Default Credentials are used (GOOGLE_APPLICATION_CREDENTIALS path, GCE
-  // metadata server, or `gcloud auth application-default login` for dev).
-  //
-  // Leave VERTEX_AI_PROJECT_ID unset to disable classification — the service
-  // falls through to the semantic pipeline.
-  VERTEX_AI_PROJECT_ID: z.string().optional(),
-  VERTEX_AI_LOCATION: z.string().default("us-central1"),
-  VERTEX_CLASSIFIER_MODEL: z.string().default("gemini-2.5-flash-lite"),
-  GCP_SERVICE_ACCOUNT_KEY_B64: z.string().optional(),
+  // Google Gemini — direct Generative Language API. Two model tiers:
+  //   GEMINI_CLASSIFIER_MODEL — Flash, fast/cheap. Used by the @brain →
+  //     ticket-intent classifier. Routing decisions only.
+  //   GEMINI_SQL_MODEL — Pro w/ thinking. Used by the text-to-SQL
+  //     generator for structured ticket queries. Writes one SQL per
+  //     question; accuracy matters more than cost.
+  // Get an API key at https://aistudio.google.com/app/apikey.
+  // Leave GEMINI_API_KEY unset to disable both paths.
+  GEMINI_API_KEY: z.string().optional(),
+  GEMINI_CLASSIFIER_MODEL: z.string().default("gemini-2.5-flash"),
+  GEMINI_SQL_MODEL: z.string().default("gemini-2.5-pro"),
 
   // GitHub codebase indexing
   GITHUB_REPOS_DIR: z.string().default("./data/repos"),
   GITHUB_SYNC_INTERVAL_MS: z.string().default("3600000"),
 
-  // Brain pipeline selector. `hybrid` (default) routes every @brain question
-  // through BrainService — structured SQL + semantic retrieval merged by the
-  // LLM synthesizer. `legacy` keeps the pre-refactor QueryService.ask binary
-  // router (aggregation vs content). Flip to `legacy` to roll back without
-  // code changes.
-  BRAIN_PIPELINE: z.enum(["hybrid", "legacy"]).default("hybrid"),
 });
 
 const parsed = envSchema.safeParse(process.env);

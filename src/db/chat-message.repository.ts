@@ -16,6 +16,7 @@ export const ChatMessageRepository = {
         role: input.role,
         content: input.content,
         sources: input.sources ?? null,
+        card: input.card ?? null,
       })
       .select("*")
       .single();
@@ -66,6 +67,7 @@ function mapRow(row: any): ChatMessage {
     role: row.role,
     content: row.content,
     sources: row.sources,
+    card: row.card ?? null,
     created_at: new Date(row.created_at),
   };
 }

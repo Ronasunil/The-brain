@@ -18,7 +18,7 @@ export const ticketIntentSchema = z.discriminatedUnion("intent", [
 ]);
 
 /**
- * OpenAPI-3-subset JSON schema sent to Vertex. Keep in sync with the Zod
+ * OpenAPI-3-subset JSON schema sent to Gemini. Keep in sync with the Zod
  * schema above — change both when adding or renaming a field.
  */
 export const TICKET_INTENT_RESPONSE_JSON_SCHEMA = {

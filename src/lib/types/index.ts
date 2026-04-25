@@ -9,6 +9,9 @@ export type {
   RememberedItem,
   ChatMessage,
   CreateChatMessageInput,
+  ChatCardPayload,
+  LinearTicketCard,
+  LinearTicketCardIssue,
 } from "./message.types";
 export { MESSAGE_SOURCES } from "./message.types";
 export type {
