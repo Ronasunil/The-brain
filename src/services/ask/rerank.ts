@@ -9,11 +9,12 @@ import { MergedRetrieval } from "./retrieve-semantic";
 export async function rerank(
   question: string,
   semantic: MergedRetrieval,
+  workspaceId?: string,
 ): Promise<MergedResults> {
   return mergeAndRerank(question, {
     manualResults: semantic.manualResults,
     messages: semantic.messages,
     entities: semantic.entities,
     code: semantic.code,
-  });
+  }, undefined, workspaceId);
 }

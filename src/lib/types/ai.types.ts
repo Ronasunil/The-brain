@@ -16,7 +16,7 @@ export interface AIProvider {
    * Generate an embedding vector for a text string.
    * Returns a number array matching the configured dimensions.
    */
-  createEmbedding(text: string): Promise<number[]>;
+  createEmbedding(text: string): Promise<AIProviderResult<number[]>>;
 
   /**
    * Generate a chat completion from a system prompt + user message.
@@ -26,7 +26,7 @@ export interface AIProvider {
     systemPrompt: string,
     userPrompt: string,
     options?: ChatCompletionOptions,
-  ): Promise<string>;
+  ): Promise<AIProviderResult<string>>;
 
   /**
    * Rerank documents by relevance to a query.
@@ -37,7 +37,38 @@ export interface AIProvider {
     query: string,
     documents: string[],
     options?: RerankOptions,
-  ): Promise<RerankResult[]>;
+  ): Promise<AIProviderResult<RerankResult[]>>;
+}
+
+export type TokenUsageOperation =
+  | "chat_completion"
+  | "embedding"
+  | "rerank"
+  | "query_planning"
+  | "other";
+
+export interface TokenUsageTracking {
+  workspaceId?: string;
+  userId?: string;
+  source?: string;
+  operation?: TokenUsageOperation;
+  metadata?: Record<string, unknown>;
+}
+
+export interface TokenUsageCounts {
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  approximate?: boolean;
+}
+
+export interface AIProviderResult<T> {
+  value: T;
+  provider: string;
+  model: string;
+  operation: TokenUsageOperation;
+  usage: TokenUsageCounts;
+  metadata?: Record<string, unknown>;
 }
 
 /**

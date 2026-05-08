@@ -60,6 +60,7 @@ export async function mergeAndRerank(
   question: string,
   sources: RetrievalSources,
   totalSlots: number = MAX_SEARCH_RESULTS + CODE_SEARCH_RESULTS,
+  workspaceId?: string,
 ): Promise<MergedResults> {
   const useRerank = AIService.supportsRerank();
 
@@ -75,6 +76,10 @@ export async function mergeAndRerank(
     const reranked = await AIService.rerank(question, documents, {
       topN: Math.min(RERANK_TOP_N, allUnified.length),
       model: RERANK_MODEL,
+    }, {
+      workspaceId,
+      source: "ask:rerank",
+      metadata: { documentCount: documents.length },
     });
     rankedUnified = reranked.map((r) => ({
       ...(allUnified[r.index] as UnifiedResult),

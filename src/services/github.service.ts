@@ -8,6 +8,7 @@ import { CodeChunker } from "./code-chunker";
 import { Integration, GitHubIntegrationConfig } from "../lib/types";
 import { IntegrationService } from "./integration.service";
 import { AppError } from "../lib/errors/app-error";
+import { AgentOrchestrator } from "./operational-memory/orchestrator";
 
 const BATCH_SIZE = 100;
 
@@ -97,6 +98,23 @@ export const GitHubService = {
     console.log(
       `✅ Indexed ${totalInserted} code chunks from ${repoName} (${integration.id})`,
     );
+
+    void AgentOrchestrator.recordEvent({
+      workspaceId: integration.workspace_id,
+      type: "github_repo_indexed",
+      subjectRefs: [{ type: "github_repo", id: integration.id }],
+      payload: {
+        content: `Indexed GitHub repository ${repoName} on ${branch}. Latest commit: ${latestCommit.message}`,
+        repo_name: repoName,
+        branch,
+        chunk_count: totalInserted,
+        last_commit_message: latestCommit.message,
+        last_commit_sha: latestCommit.sha,
+      },
+    }).catch((err) => {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.warn(`Operational GitHub event skipped: ${msg}`);
+    });
 
     return totalInserted;
   },
@@ -205,6 +223,23 @@ export const GitHubService = {
     console.log(
       `🔄 Synced ${repoName}: ${changedFiles.length} files changed, ${totalInserted} chunks updated`,
     );
+
+    void AgentOrchestrator.recordEvent({
+      workspaceId: integration.workspace_id,
+      type: "github_repo_indexed",
+      subjectRefs: [{ type: "github_repo", id: integration.id }],
+      payload: {
+        content: `Synced GitHub repository ${repoName}. ${changedFiles.length} files changed. Latest commit: ${latestCommit.message}`,
+        repo_name: repoName,
+        changed_files: changedFiles,
+        chunk_count: chunkCount,
+        last_commit_message: latestCommit.message,
+        last_commit_sha: latestCommit.sha,
+      },
+    }).catch((err) => {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.warn(`Operational GitHub event skipped: ${msg}`);
+    });
 
     return totalInserted;
   },

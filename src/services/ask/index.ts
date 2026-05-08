@@ -43,7 +43,7 @@ export const BrainService = {
     if (direct) return trace.done("ticket_id", direct);
 
     // 2. Plan + routing decision from Gemini.
-    const planning = await planQuery(question);
+    const planning = await planQuery(question, workspaceId);
     trace.planned({
       hasPlan: planning.plan !== null,
       table: planning.plan?.table,
@@ -123,8 +123,12 @@ export const BrainService = {
         // SQL failed but semantic succeeded → degrade to semantic.
         if (!sql.ok) {
           trace.note(`hybrid: sql failed (${sql.reason}) → semantic only`);
-          const ranked = await rerank(question, semantic.merged);
-          const out = await synthesizeFromSemantic({ question, merged: ranked });
+          const ranked = await rerank(question, semantic.merged, workspaceId);
+          const out = await synthesizeFromSemantic({
+            question,
+            workspaceId,
+            merged: ranked,
+          });
           trace.scoped({ route: planning.route, sources: [...semantic.sources] });
           trace.semanticHits(out.hitCount);
           trace.synthesized(out.ok ? "ok" : "error");
@@ -138,8 +142,13 @@ export const BrainService = {
         });
         trace.scoped({ route: planning.route, sources: [...semantic.sources] });
 
-        const ranked = await rerank(question, semantic.merged);
-        const out = await synthesizeHybrid({ question, sql, merged: ranked });
+        const ranked = await rerank(question, semantic.merged, workspaceId);
+        const out = await synthesizeHybrid({
+          question,
+          workspaceId,
+          sql,
+          merged: ranked,
+        });
         trace.semanticHits(out.semanticHits);
         trace.synthesized(out.ok ? "ok" : "error");
         return trace.done("hybrid", out.answer);
@@ -176,9 +185,10 @@ async function runSemanticOnly(opts: SemanticOnlyOpts): Promise<BrainAnswer> {
   });
   opts.trace.scoped({ route: opts.route, sources: [...sources] });
 
-  const ranked = await rerank(opts.question, merged);
+  const ranked = await rerank(opts.question, merged, opts.workspaceId);
   const out = await synthesizeFromSemantic({
     question: opts.question,
+    workspaceId: opts.workspaceId,
     merged: ranked,
   });
   opts.trace.semanticHits(out.hitCount);

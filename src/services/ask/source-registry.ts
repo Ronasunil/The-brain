@@ -5,6 +5,10 @@ import {
 } from "../../db/entity.repository";
 import { CodeChunkRepository } from "../../db/code-chunk.repository";
 import {
+  memoryToSearchText,
+  OperationalMemoryRepository,
+} from "../../db/operational-memory.repository";
+import {
   SearchResult,
   CodeSearchResult,
   EntitySearchResult,
@@ -128,4 +132,53 @@ export const SOURCE_FETCHERS: Record<SourceName, Fetcher> = {
       c.integrationId,
     ),
   }),
+
+  operational_memory_vec: async (c) => ({
+    kind: "messages",
+    results: (
+      await OperationalMemoryRepository.searchSimilar(
+        c.embedding,
+        c.workspaceId,
+        c.fetchCount,
+        c.similarityThreshold,
+      )
+    ).map((r) => operationalMemoryToSearchResult(r.memory, r.similarity)),
+  }),
+
+  operational_memory_fts: async (c) => ({
+    kind: "messages",
+    results: (
+      await OperationalMemoryRepository.searchFullText(
+        c.question,
+        c.workspaceId,
+        FULLTEXT_SEARCH_LIMIT,
+      )
+    ).map((r) => operationalMemoryToSearchResult(r.memory, r.similarity)),
+  }),
 };
+
+function operationalMemoryToSearchResult(
+  memory: Awaited<
+    ReturnType<typeof OperationalMemoryRepository.searchFullText>
+  >[number]["memory"],
+  similarity: number,
+): SearchResult {
+  return {
+    message: {
+      id: `operational_memory:${memory.id}`,
+      workspace_id: memory.workspace_id,
+      integration_id: "",
+      source: "web",
+      source_message_id: memory.id,
+      user_name: memory.created_by_agent,
+      user_id: memory.approved_by ?? "",
+      chat_id: memory.kind,
+      chat_name: "operational_memory",
+      content: memoryToSearchText(memory),
+      timestamp: memory.freshness_at,
+      embedding: null,
+      created_at: memory.created_at,
+    },
+    similarity,
+  };
+}

@@ -1,11 +1,32 @@
 import { CohereClient } from "cohere-ai";
 import {
   AIProvider,
+  AIProviderResult,
   AIProviderConfig,
   ChatCompletionOptions,
   RerankOptions,
   RerankResult,
 } from "../lib/types/ai.types";
+
+function estimateTokens(text: string): number {
+  return Math.max(1, Math.ceil(text.length / 4));
+}
+
+function cohereInputTokens(response: any, fallback: number): number {
+  return (
+    response?.meta?.billedUnits?.inputTokens ??
+    response?.meta?.tokens?.inputTokens ??
+    fallback
+  );
+}
+
+function cohereOutputTokens(response: any, fallback: number): number {
+  return (
+    response?.meta?.billedUnits?.outputTokens ??
+    response?.meta?.tokens?.outputTokens ??
+    fallback
+  );
+}
 
 /**
  * Cohere Provider — uses the official Cohere SDK.
@@ -30,7 +51,7 @@ export class CohereProvider implements AIProvider {
     });
   }
 
-  async createEmbedding(text: string): Promise<number[]> {
+  async createEmbedding(text: string): Promise<AIProviderResult<number[]>> {
     const response = await this.client.embed({
       texts: [text],
       model: this.config.embeddingModel,
@@ -46,7 +67,19 @@ export class CohereProvider implements AIProvider {
       "float" in embeddings &&
       Array.isArray(embeddings.float)
     ) {
-      return embeddings.float[0];
+      const inputTokens = cohereInputTokens(response, estimateTokens(text));
+      return {
+        value: embeddings.float[0],
+        provider: this.name,
+        model: this.config.embeddingModel,
+        operation: "embedding",
+        usage: {
+          inputTokens,
+          outputTokens: 0,
+          totalTokens: inputTokens,
+          approximate: !response.meta,
+        },
+      };
     }
 
     throw new Error("Unexpected embedding response format from Cohere");
@@ -56,7 +89,7 @@ export class CohereProvider implements AIProvider {
     systemPrompt: string,
     userPrompt: string,
     options: ChatCompletionOptions = {},
-  ): Promise<string> {
+  ): Promise<AIProviderResult<string>> {
     const response = await this.client.chat({
       model: this.config.chatModel,
       message: userPrompt,
@@ -65,14 +98,31 @@ export class CohereProvider implements AIProvider {
       maxTokens: options.maxTokens ?? 500,
     });
 
-    return response.text || "I couldn't generate an answer.";
+    const text = response.text || "I couldn't generate an answer.";
+    const inputTokens = cohereInputTokens(
+      response,
+      estimateTokens(`${systemPrompt}\n${userPrompt}`),
+    );
+    const outputTokens = cohereOutputTokens(response, estimateTokens(text));
+    return {
+      value: text,
+      provider: this.name,
+      model: this.config.chatModel,
+      operation: "chat_completion",
+      usage: {
+        inputTokens,
+        outputTokens,
+        totalTokens: inputTokens + outputTokens,
+        approximate: !response.meta,
+      },
+    };
   }
 
   async rerank(
     query: string,
     documents: string[],
     options: RerankOptions = {},
-  ): Promise<RerankResult[]> {
+  ): Promise<AIProviderResult<RerankResult[]>> {
     const response = await this.client.rerank({
       model: options.model || "rerank-v3.5",
       query,
@@ -80,9 +130,25 @@ export class CohereProvider implements AIProvider {
       topN: options.topN || documents.length,
     });
 
-    return response.results.map((r) => ({
+    const value = response.results.map((r) => ({
       index: r.index,
       relevanceScore: r.relevanceScore,
     }));
+    const inputTokens = cohereInputTokens(
+      response,
+      estimateTokens(`${query}\n${documents.join("\n")}`),
+    );
+    return {
+      value,
+      provider: this.name,
+      model: options.model || "rerank-v3.5",
+      operation: "rerank",
+      usage: {
+        inputTokens,
+        outputTokens: 0,
+        totalTokens: inputTokens,
+        approximate: !response.meta,
+      },
+    };
   }
 }

@@ -1,11 +1,16 @@
 import OpenAI from "openai";
 import {
   AIProvider,
+  AIProviderResult,
   AIProviderConfig,
   ChatCompletionOptions,
   RerankOptions,
   RerankResult,
 } from "../lib/types/ai.types";
+
+function estimateTokens(text: string): number {
+  return Math.max(1, Math.ceil(text.length / 4));
+}
 
 /**
  * Zhipu AI Provider (z.ai) — GLM models.
@@ -31,20 +36,33 @@ export class ZhipuProvider implements AIProvider {
     });
   }
 
-  async createEmbedding(text: string): Promise<number[]> {
+  async createEmbedding(text: string): Promise<AIProviderResult<number[]>> {
     const response = await this.client.embeddings.create({
       model: this.config.embeddingModel,
       input: text,
     });
 
-    return response.data[0].embedding;
+    const usage = response.usage as { prompt_tokens?: number; total_tokens?: number } | undefined;
+    const inputTokens = usage?.prompt_tokens ?? estimateTokens(text);
+    return {
+      value: response.data[0].embedding,
+      provider: this.name,
+      model: this.config.embeddingModel,
+      operation: "embedding",
+      usage: {
+        inputTokens,
+        outputTokens: 0,
+        totalTokens: usage?.total_tokens ?? inputTokens,
+        approximate: !usage,
+      },
+    };
   }
 
   async generateChatCompletion(
     systemPrompt: string,
     userPrompt: string,
     options: ChatCompletionOptions = {},
-  ): Promise<string> {
+  ): Promise<AIProviderResult<string>> {
     const response = await this.client.chat.completions.create({
       model: this.config.chatModel,
       messages: [
@@ -55,17 +73,39 @@ export class ZhipuProvider implements AIProvider {
       max_tokens: options.maxTokens ?? 500,
     });
 
-    return (
-      response.choices[0]?.message?.content || "I couldn't generate an answer."
-    );
+    const text =
+      response.choices[0]?.message?.content || "I couldn't generate an answer.";
+    const usage = response.usage;
+    const inputTokens =
+      usage?.prompt_tokens ?? estimateTokens(`${systemPrompt}\n${userPrompt}`);
+    const outputTokens = usage?.completion_tokens ?? estimateTokens(text);
+    return {
+      value: text,
+      provider: this.name,
+      model: this.config.chatModel,
+      operation: "chat_completion",
+      usage: {
+        inputTokens,
+        outputTokens,
+        totalTokens: usage?.total_tokens ?? inputTokens + outputTokens,
+        approximate: !usage,
+      },
+    };
   }
 
   async rerank(
     _query: string,
     documents: string[],
     _options: RerankOptions = {},
-  ): Promise<RerankResult[]> {
+  ): Promise<AIProviderResult<RerankResult[]>> {
     // Zhipu doesn't support rerank — return original order
-    return documents.map((_, index) => ({ index, relevanceScore: 1 }));
+    return {
+      value: documents.map((_, index) => ({ index, relevanceScore: 1 })),
+      provider: this.name,
+      model: "none",
+      operation: "rerank",
+      usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 },
+      metadata: { skipped: true },
+    };
   }
 }

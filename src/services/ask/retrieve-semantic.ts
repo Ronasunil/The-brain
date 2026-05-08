@@ -82,7 +82,10 @@ async function buildFetchCtx(opts: RetrieveSemanticOpts): Promise<FetchCtx> {
       ? Math.min(MIN_SIMILARITY_THRESHOLD, 0.15)
       : MIN_SIMILARITY_THRESHOLD;
 
-  const embedding = await AIService.createEmbedding(opts.question);
+  const embedding = await AIService.createEmbedding(opts.question, {
+    workspaceId: opts.workspaceId,
+    source: "ask:semantic_query_embedding",
+  });
 
   return {
     question: opts.question,

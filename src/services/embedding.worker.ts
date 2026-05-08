@@ -76,7 +76,11 @@ export const EmbeddingWorker = {
         continue;
       }
       try {
-        const embedding = await AIService.createEmbedding(msg.content);
+        const embedding = await AIService.createEmbedding(msg.content, {
+          workspaceId: msg.workspace_id,
+          source: "embedding_worker:message",
+          metadata: { messageId: msg.id },
+        });
         await MessageRepository.updateEmbedding(msg.id, embedding);
         embedded++;
       } catch (error) {
@@ -93,7 +97,11 @@ export const EmbeddingWorker = {
         continue;
       }
       try {
-        const embedding = await AIService.createEmbedding(text);
+        const embedding = await AIService.createEmbedding(text, {
+          workspaceId: entity.workspace_id,
+          source: "embedding_worker:entity",
+          metadata: { entityId: entity.id },
+        });
         await EntityRepository.updateEmbedding(entity.id, embedding);
         embedded++;
       } catch (error) {
@@ -109,7 +117,11 @@ export const EmbeddingWorker = {
         continue;
       }
       try {
-        const embedding = await AIService.createEmbedding(comment.content);
+        const embedding = await AIService.createEmbedding(comment.content, {
+          workspaceId: comment.workspace_id,
+          source: "embedding_worker:comment",
+          metadata: { commentId: comment.id },
+        });
         await EntityCommentRepository.updateEmbedding(comment.id, embedding);
         embedded++;
       } catch (error) {
@@ -136,7 +148,11 @@ export const EmbeddingWorker = {
       }
 
       try {
-        const embedding = await AIService.createEmbedding(chunk.content);
+        const embedding = await AIService.createEmbedding(chunk.content, {
+          workspaceId: chunk.workspace_id,
+          source: "embedding_worker:code",
+          metadata: { chunkId: chunk.id, filePath: chunk.file_path },
+        });
         await CodeChunkRepository.updateEmbedding(chunk.id, embedding);
         embeddedChunks++;
       } catch (error) {

@@ -14,7 +14,9 @@ export type SourceName =
   | "entities_fts"
   | "entity_comments"
   | "code_vec"
-  | "code_fts";
+  | "code_fts"
+  | "operational_memory_vec"
+  | "operational_memory_fts";
 
 export const ALL_SOURCES: ReadonlySet<SourceName> = new Set<SourceName>([
   "manual",
@@ -25,6 +27,8 @@ export const ALL_SOURCES: ReadonlySet<SourceName> = new Set<SourceName>([
   "entity_comments",
   "code_vec",
   "code_fts",
+  "operational_memory_vec",
+  "operational_memory_fts",
 ]);
 
 const LINEAR_SOURCES: ReadonlySet<SourceName> = new Set<SourceName>([
@@ -46,6 +50,8 @@ const CHAT_SOURCES: ReadonlySet<SourceName> = new Set<SourceName>([
 const MIXED_SOURCES: ReadonlySet<SourceName> = new Set<SourceName>([
   ...LINEAR_SOURCES,
   ...CHAT_SOURCES,
+  "operational_memory_vec",
+  "operational_memory_fts",
 ]);
 
 /**
@@ -78,7 +84,12 @@ export function selectSources(scope: RetrievalScope | null): Set<SourceName> {
   }
 
   const narrow = (domainSources: ReadonlySet<SourceName>): Set<SourceName> =>
-    new Set<SourceName>(["manual", ...domainSources]);
+    new Set<SourceName>([
+      "manual",
+      "operational_memory_vec",
+      "operational_memory_fts",
+      ...domainSources,
+    ]);
 
   switch (scope.domain) {
     case "linear":

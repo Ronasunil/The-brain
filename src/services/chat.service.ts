@@ -1,6 +1,10 @@
 import { ChatMessageRepository } from "../db/chat-message.repository";
 import { BrainService } from "./brain.service";
 import { ChatMessage, BrainAnswer } from "../lib/types";
+import { MessageService } from "./message.service";
+import { IntegrationService } from "./integration.service";
+import { AgentOrchestrator } from "./operational-memory/orchestrator";
+import { OperationalMemoryService } from "./operational-memory.service";
 
 export const ChatService = {
   /**
@@ -12,13 +16,23 @@ export const ChatService = {
     userName: string,
     content: string,
   ): Promise<ChatMessage> {
-    return ChatMessageRepository.create({
+    const chatMsg = await ChatMessageRepository.create({
       workspace_id: workspaceId,
       user_id: userId,
       user_name: userName,
       role: "user",
       content,
     });
+
+    void ingestChatMessageForMemory({
+      workspaceId,
+      userId,
+      userName,
+      content,
+      chatMessageId: chatMsg.id,
+    });
+
+    return chatMsg;
   },
 
   /**
@@ -40,6 +54,26 @@ export const ChatService = {
     return assistantMsg;
   },
 
+  async askAgent(
+    workspaceId: string,
+    userId: string,
+    request: string,
+  ): Promise<ChatMessage> {
+    const result: BrainAnswer = await OperationalMemoryService.askAgent({
+      workspaceId,
+      userId,
+      request,
+    });
+
+    return ChatMessageRepository.create({
+      workspace_id: workspaceId,
+      role: "assistant",
+      user_name: "agent-bot",
+      content: result.answer,
+      sources: result.sources,
+    });
+  },
+
   /**
    * Paginated chat history for a workspace.
    */
@@ -54,3 +88,48 @@ export const ChatService = {
     });
   },
 };
+
+async function ingestChatMessageForMemory(args: {
+  workspaceId: string;
+  userId: string;
+  userName: string;
+  content: string;
+  chatMessageId: string;
+}): Promise<void> {
+  try {
+    const integration = await IntegrationService.getManualIntegration(
+      args.workspaceId,
+    );
+    await MessageService.ingest({
+      workspace_id: args.workspaceId,
+      integration_id: integration.id,
+      source: "web",
+      source_message_id: args.chatMessageId,
+      user_name: args.userName,
+      user_id: args.userId,
+      chat_id: `workspace:${args.workspaceId}`,
+      chat_name: "In-app chat",
+      content: args.content,
+      timestamp: new Date(),
+    });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.warn(`Chat memory ingestion skipped: ${msg}`);
+  }
+
+  try {
+    await AgentOrchestrator.recordEvent({
+      workspaceId: args.workspaceId,
+      type: "chat_message_ingested",
+      subjectRefs: [{ type: "chat_message", id: args.chatMessageId }],
+      payload: {
+        content: args.content,
+        user_id: args.userId,
+        user_name: args.userName,
+      },
+    });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.warn(`Operational agent event skipped: ${msg}`);
+  }
+}

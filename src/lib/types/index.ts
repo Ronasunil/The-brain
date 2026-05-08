@@ -21,6 +21,10 @@ export type {
   ChatCompletionOptions,
   RerankOptions,
   RerankResult,
+  TokenUsageTracking,
+  TokenUsageOperation,
+  TokenUsageCounts,
+  AIProviderResult,
 } from "./ai.types";
 export { AI_PROVIDERS } from "./ai.types";
 export type {
@@ -67,3 +71,34 @@ export type {
   CodeSearchResult,
   GitHubIntegrationConfig,
 } from "./code-chunk.types";
+export type {
+  AgentActionPlan,
+  AgentContext,
+  AgentEvent,
+  AgentEventType,
+  AgentHandoff,
+  AgentModule,
+  AgentResult,
+  AgentRun,
+  OperationalGraph,
+  OperationalMemory,
+  OperationalMemoryEdge,
+  OperationalMemoryEdgeKind,
+  OperationalMemoryEvidence,
+  OperationalMemoryKind,
+  OperationalMemorySearchResult,
+  OperationalMemoryStatus,
+  ProposedOperationalMemory,
+} from "./operational-memory.types";
+export {
+  AGENT_EVENT_TYPES,
+  OPERATIONAL_MEMORY_EDGE_KINDS,
+  OPERATIONAL_MEMORY_KINDS,
+  OPERATIONAL_MEMORY_STATUSES,
+} from "./operational-memory.types";
+export type {
+  TokenUsageEvent,
+  TokenUsageRecordInput,
+  TokenUsageSummary,
+  TokenUsageSummaryBucket,
+} from "./token-usage.types";

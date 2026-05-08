@@ -27,6 +27,9 @@ const BRAIN_TRIGGER = /(^|\s)@brain(?=\s|$|[.,!?;:])/i;
 /** Explicit prefix trigger for ticket creation. */
 const TICKET_TRIGGER = /^@ticket(?=\s|$)/i;
 
+/** Explicit prefix trigger for shadow-mode operational agents. */
+const AGENT_TRIGGER = /^@agent(?=\s|$)/i;
+
 /** Matches a standalone cancel / /cancel reply that aborts an in-flight draft. */
 const CANCEL_RE = /^\s*\/?cancel\s*$/i;
 
@@ -48,6 +51,11 @@ function extractTicketRequest(
   if (!body) return null;
   const firstLine = body.split(/\r?\n/)[0]?.trim() ?? body;
   return { title: firstLine, description: body };
+}
+
+function extractAgentRequest(content: string): string | null {
+  if (!AGENT_TRIGGER.test(content)) return null;
+  return content.replace(AGENT_TRIGGER, "").trim() || null;
 }
 
 /**
@@ -245,6 +253,26 @@ export function initSocketIO(httpServer: http.Server): Server {
             io.to(room).emit("chat:message", bot);
           } catch (err) {
             await emitBotError(io, room, workspaceId, err);
+          }
+          return;
+        }
+
+        const agentRequest = extractAgentRequest(content);
+        if (agentRequest) {
+          io.to(room).emit("chat:brain-thinking", { workspaceId });
+          try {
+            const bot = await ChatService.askAgent(
+              workspaceId,
+              user.id,
+              agentRequest,
+            );
+            io.to(room).emit("chat:message", bot);
+          } catch (err) {
+            console.error("âš ï¸ @agent query failed:", err);
+            io.to(room).emit("chat:brain-error", {
+              workspaceId,
+              error: "Agent failed to process the request. Please try again.",
+            });
           }
           return;
         }

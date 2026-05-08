@@ -127,7 +127,7 @@ export function buildSources(
     out.push({
       content: msg.content,
       user_name: msg.user_name,
-      source: msg.source,
+      source: sourceLabel(msg),
       timestamp: msg.timestamp,
       similarity: round2(r.similarity),
     });
@@ -153,7 +153,7 @@ export function buildSources(
       out.push({
         content: msg.content,
         user_name: msg.user_name,
-        source: msg.source,
+        source: sourceLabel(msg),
         timestamp: msg.timestamp,
         similarity: round2(u.similarity),
       });
@@ -165,4 +165,12 @@ export function buildSources(
 
 function round2(n: number): number {
   return Math.round(n * 100) / 100;
+}
+
+function sourceLabel(
+  msg: SearchResult["message"],
+): BrainAnswerSource["source"] {
+  return msg.chat_name === "operational_memory"
+    ? "operational_memory"
+    : msg.source;
 }

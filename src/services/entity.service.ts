@@ -9,6 +9,7 @@ import {
   Entity,
   EntityComment,
 } from "../lib/types/entity.types";
+import { AgentOrchestrator } from "./operational-memory/orchestrator";
 
 /**
  * Generic entity operations shared across integrations (Linear today,
@@ -54,6 +55,24 @@ export const EntityService = {
         input.external_updated_at,
         input.participants,
       );
+      if (updated) {
+        void AgentOrchestrator.recordEvent({
+          workspaceId: input.workspace_id,
+          type: "linear_entity_updated",
+          subjectRefs: [{ type: input.type, id: updated.id, external_id: input.external_id }],
+          payload: {
+            title: input.title,
+            body: input.body,
+            content: `${input.title}\n${input.body}`,
+            assignee_name: (input.state as Record<string, unknown>).assignee_name,
+            status_name: (input.state as Record<string, unknown>).status_name,
+            priority_label: (input.state as Record<string, unknown>).priority_label,
+          },
+        }).catch((err) => {
+          const msg = err instanceof Error ? err.message : String(err);
+          console.warn(`Operational entity state event skipped: ${msg}`);
+        });
+      }
       return {
         entity: updated ?? existing,
         needsEmbedding: false,
@@ -62,6 +81,24 @@ export const EntityService = {
     }
 
     const { entity, stale } = await EntityRepository.upsert(input);
+    if (!stale) {
+      void AgentOrchestrator.recordEvent({
+        workspaceId: input.workspace_id,
+        type: "linear_entity_updated",
+        subjectRefs: [{ type: input.type, id: entity.id, external_id: input.external_id }],
+        payload: {
+          title: input.title,
+          body: input.body,
+          content: `${input.title}\n${input.body}`,
+          assignee_name: (input.state as Record<string, unknown>).assignee_name,
+          status_name: (input.state as Record<string, unknown>).status_name,
+          priority_label: (input.state as Record<string, unknown>).priority_label,
+        },
+      }).catch((err) => {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.warn(`Operational entity event skipped: ${msg}`);
+      });
+    }
     return {
       entity,
       needsEmbedding: !stale,
@@ -91,7 +128,21 @@ export const EntityService = {
   },
 
   async upsertComment(input: CreateEntityCommentInput): Promise<EntityComment> {
-    return EntityCommentRepository.upsert(input);
+    const comment = await EntityCommentRepository.upsert(input);
+    void AgentOrchestrator.recordEvent({
+      workspaceId: input.workspace_id,
+      type: "linear_entity_updated",
+      subjectRefs: [{ type: "entity_comment", id: comment.id }],
+      payload: {
+        content: input.content,
+        user_id: input.author_id,
+        user_name: input.author_name,
+      },
+    }).catch((err) => {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.warn(`Operational comment event skipped: ${msg}`);
+    });
+    return comment;
   },
 
   async deleteComment(entityId: string, externalId: string): Promise<void> {

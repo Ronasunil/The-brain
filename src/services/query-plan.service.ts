@@ -73,7 +73,7 @@ const SEMANTIC_FALLBACK: QueryPlanResult = {
 };
 
 export const QueryPlanService = {
-  async generate(question: string): Promise<QueryPlanResult> {
+  async generate(question: string, workspaceId?: string): Promise<QueryPlanResult> {
     if (!isGeminiConfigured()) return SEMANTIC_FALLBACK;
 
     let lastBadAttempt: { plan: unknown; error: z.ZodError } | null = null;
@@ -98,6 +98,11 @@ export const QueryPlanService = {
           model: env.GEMINI_SQL_MODEL,
           timeoutMs: 30_000,
           temperature: 0,
+          tracking: {
+            workspaceId,
+            source: "ask:query_planning",
+            metadata: { attempt },
+          },
         });
 
         const route = parseRoute(raw.route);

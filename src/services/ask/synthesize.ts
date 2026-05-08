@@ -23,6 +23,7 @@ const FALLBACK =
 
 interface SynthOpts {
   question: string;
+  workspaceId: string;
   searchResults: SearchResult[];
   groundTruthFacts?: SearchResult[];
   codeResults?: CodeSearchResult[];
@@ -45,6 +46,10 @@ async function safeSynth(opts: SynthOpts): Promise<{
       opts.groundTruthFacts,
       opts.codeResults,
       opts.aggregationCtx,
+      {
+        workspaceId: opts.workspaceId,
+        source: "ask:synthesize_answer",
+      },
     );
     return { text, ok: true };
   } catch (err) {
@@ -76,6 +81,7 @@ export async function synthesizeFromSql(args: {
 
   const { text, ok } = await safeSynth({
     question: args.question,
+    workspaceId: args.workspaceId,
     searchResults: [],
     groundTruthFacts: manualFacts.length > 0 ? manualFacts : undefined,
     aggregationCtx,
@@ -94,6 +100,7 @@ export async function synthesizeFromSql(args: {
  */
 export async function synthesizeFromSemantic(args: {
   question: string;
+  workspaceId: string;
   merged: MergedResults;
 }): Promise<{ answer: BrainAnswer; ok: boolean; hitCount: number }> {
   const messageResults = extractMessages(args.merged.ranked);
@@ -106,6 +113,7 @@ export async function synthesizeFromSemantic(args: {
 
   const { text, ok } = await safeSynth({
     question: args.question,
+    workspaceId: args.workspaceId,
     searchResults,
     groundTruthFacts:
       args.merged.manualResults.length > 0
@@ -135,6 +143,7 @@ export async function synthesizeFromSemantic(args: {
  */
 export async function synthesizeHybrid(args: {
   question: string;
+  workspaceId: string;
   sql: Extract<SqlResult, { ok: true }>;
   merged: MergedResults;
 }): Promise<{ answer: BrainAnswer; ok: boolean; sqlRows: number; semanticHits: number }> {
@@ -153,6 +162,7 @@ export async function synthesizeHybrid(args: {
 
   const { text, ok } = await safeSynth({
     question: args.question,
+    workspaceId: args.workspaceId,
     searchResults,
     groundTruthFacts:
       args.merged.manualResults.length > 0

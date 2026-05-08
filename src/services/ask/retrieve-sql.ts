@@ -91,7 +91,10 @@ export async function fetchManualFacts(
   integrationId: string | undefined,
 ): Promise<SearchResult[]> {
   try {
-    const embedding = await AIService.createEmbedding(question);
+    const embedding = await AIService.createEmbedding(question, {
+      workspaceId,
+      source: "ask:manual_fact_embedding",
+    });
     return await MessageRepository.searchManual(
       workspaceId,
       embedding,

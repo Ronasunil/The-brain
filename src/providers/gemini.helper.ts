@@ -1,5 +1,7 @@
 import { env } from "../config/env";
 import { AppError } from "../lib/errors/app-error";
+import { TokenUsageTracking } from "../lib/types";
+import { TokenUsageService } from "../services/token-usage.service";
 
 /**
  * Thin helper around Google's direct Gemini API (Generative Language API).
@@ -40,6 +42,12 @@ export interface GeminiJsonParams {
   timeoutMs?: number;
   /** Sampling temperature. Default 0 (deterministic). */
   temperature?: number;
+  /** Optional workspace-scoped spend tracking metadata. */
+  tracking?: TokenUsageTracking;
+}
+
+function estimateTokens(text: string): number {
+  return Math.max(1, Math.ceil(text.length / 4));
 }
 
 /**
@@ -100,6 +108,11 @@ export async function callGeminiJson<T = unknown>(
 
   const payload = (await res.json()) as {
     candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>;
+    usageMetadata?: {
+      promptTokenCount?: number;
+      candidatesTokenCount?: number;
+      totalTokenCount?: number;
+    };
   };
 
   const text = payload.candidates?.[0]?.content?.parts?.[0]?.text;
@@ -108,6 +121,30 @@ export async function callGeminiJson<T = unknown>(
   }
 
   try {
+    await TokenUsageService.recordFromProvider(
+      {
+        value: null,
+        provider: "gemini",
+        model,
+        operation: "query_planning",
+        usage: {
+          inputTokens:
+            payload.usageMetadata?.promptTokenCount ??
+            estimateTokens(params.prompt),
+          outputTokens:
+            payload.usageMetadata?.candidatesTokenCount ??
+            estimateTokens(text),
+          totalTokens:
+            payload.usageMetadata?.totalTokenCount ??
+            estimateTokens(params.prompt) + estimateTokens(text),
+          approximate: !payload.usageMetadata,
+        },
+      },
+      {
+        ...params.tracking,
+        operation: params.tracking?.operation ?? "query_planning",
+      },
+    );
     return JSON.parse(text) as T;
   } catch {
     throw new AppError(

@@ -247,12 +247,12 @@ export const EntityRepository = {
   },
 
   async getUnembedded(limit: number = 50): Promise<
-    Array<{ id: string; title: string; body: string }>
+    Array<{ id: string; workspace_id: string; title: string; body: string }>
   > {
     const supabase = getSupabaseClient();
     const { data, error } = await supabase
       .from("entities")
-      .select("id, title, body")
+      .select("id, workspace_id, title, body")
       .is("embedding", null)
       .order("external_updated_at", { ascending: true })
       .limit(limit);
@@ -261,6 +261,7 @@ export const EntityRepository = {
     }
     return (data ?? []).map((row: any) => ({
       id: row.id,
+      workspace_id: row.workspace_id,
       title: row.title ?? "",
       body: row.body ?? "",
     }));
@@ -399,11 +400,11 @@ export const EntityCommentRepository = {
 
   async getUnembedded(
     limit: number = 50,
-  ): Promise<Array<{ id: string; content: string }>> {
+  ): Promise<Array<{ id: string; workspace_id: string; content: string }>> {
     const supabase = getSupabaseClient();
     const { data, error } = await supabase
       .from("entity_comments")
-      .select("id, content")
+      .select("id, workspace_id, content")
       .is("embedding", null)
       .order("external_created_at", { ascending: true })
       .limit(limit);
@@ -415,6 +416,7 @@ export const EntityCommentRepository = {
     }
     return (data ?? []).map((row: any) => ({
       id: row.id,
+      workspace_id: row.workspace_id,
       content: row.content ?? "",
     }));
   },

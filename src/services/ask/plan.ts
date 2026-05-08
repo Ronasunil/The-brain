@@ -6,6 +6,9 @@ import { QueryPlanService, QueryPlanResult } from "../query-plan.service";
  * pass-through today; lives here so a future caching layer / batching
  * layer / experiment hook has an obvious home.
  */
-export async function planQuery(question: string): Promise<QueryPlanResult> {
-  return QueryPlanService.generate(question);
+export async function planQuery(
+  question: string,
+  workspaceId?: string,
+): Promise<QueryPlanResult> {
+  return QueryPlanService.generate(question, workspaceId);
 }

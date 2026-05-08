@@ -2,7 +2,12 @@ import { randomBytes } from "node:crypto";
 import { getAIProvider } from "../providers";
 import { SYSTEM_PROMPT } from "../lib/constants/app.constants";
 import { SearchResult, CodeSearchResult, Entity } from "../lib/types";
-import { RerankOptions, RerankResult } from "../lib/types/ai.types";
+import {
+  RerankOptions,
+  RerankResult,
+  TokenUsageTracking,
+} from "../lib/types/ai.types";
+import { TokenUsageService } from "./token-usage.service";
 
 function sanitizeForPrompt(text: string): string {
   return text
@@ -74,9 +79,17 @@ function buildAggregationBlock(ctx: AggregationContext | undefined): string {
 }
 
 export const AIService = {
-  async createEmbedding(text: string): Promise<number[]> {
+  async createEmbedding(
+    text: string,
+    tracking?: TokenUsageTracking,
+  ): Promise<number[]> {
     const provider = getAIProvider();
-    return provider.createEmbedding(text);
+    const result = await provider.createEmbedding(text);
+    await TokenUsageService.recordFromProvider(result, {
+      ...tracking,
+      operation: "embedding",
+    });
+    return result.value;
   },
 
   /**
@@ -96,6 +109,7 @@ export const AIService = {
     groundTruthFacts?: SearchResult[],
     codeResults?: CodeSearchResult[],
     aggregationCtx?: AggregationContext,
+    tracking?: TokenUsageTracking,
   ): Promise<string> {
     const provider = getAIProvider();
 
@@ -199,19 +213,30 @@ CRITICAL — answer in natural English:
   • NEVER invent ticket IDs, titles, counts, or dates that don't appear above.`;
     }
 
-    return provider.generateChatCompletion(systemPrompt, userPrompt, {
+    const result = await provider.generateChatCompletion(systemPrompt, userPrompt, {
       temperature: 0.3,
       maxTokens: 500,
     });
+    await TokenUsageService.recordFromProvider(result, {
+      ...tracking,
+      operation: "chat_completion",
+    });
+    return result.value;
   },
 
   async rerank(
     query: string,
     documents: string[],
     options?: RerankOptions,
+    tracking?: TokenUsageTracking,
   ): Promise<RerankResult[]> {
     const provider = getAIProvider();
-    return provider.rerank(query, documents, options);
+    const result = await provider.rerank(query, documents, options);
+    await TokenUsageService.recordFromProvider(result, {
+      ...tracking,
+      operation: "rerank",
+    });
+    return result.value;
   },
 
   supportsRerank(): boolean {
