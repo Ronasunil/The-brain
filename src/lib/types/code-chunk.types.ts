@@ -29,6 +29,7 @@ export interface CreateCodeChunkInput {
 export interface CodeSearchResult {
   chunk: CodeChunk;
   similarity: number;
+  contextHint?: string;
 }
 
 export interface GitHubIntegrationConfig {

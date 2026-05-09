@@ -27,6 +27,8 @@ router.post(
   OperationalMemoryController.reject,
 );
 router.get("/operational-graph", OperationalMemoryController.graph);
+router.get("/operational-context-graph", OperationalMemoryController.contextGraph);
+router.get("/operational-context", OperationalMemoryController.context);
 router.get("/agent-runs", OperationalMemoryController.agentRuns);
 
 export { router as operationalMemoryRouter };

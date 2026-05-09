@@ -63,6 +63,7 @@ export async function mergeAndRerank(
   workspaceId?: string,
 ): Promise<MergedResults> {
   const useRerank = AIService.supportsRerank();
+  const overviewQuestion = isProjectOverviewQuestion(question);
 
   const allUnified: UnifiedResult[] = [
     ...(sources.messages ?? []).map(messageToUnified),
@@ -93,7 +94,23 @@ export async function mergeAndRerank(
 
   const manualResults = sources.manualResults ?? [];
   const manualIds = new Set(manualResults.map((r) => r.message.id));
-  const dedupedRanked = rankedUnified.filter((r) => !manualIds.has(r.id));
+  let dedupedRanked = rankedUnified.filter((r) => !manualIds.has(r.id));
+  if (overviewQuestion) {
+    const overviewCode = allUnified
+      .filter(
+        (r) =>
+          r.origin === "code" &&
+          r.codeResult?.contextHint &&
+          !manualIds.has(r.id),
+      )
+      .sort((a, b) => b.similarity - a.similarity)
+      .slice(0, 6);
+    const overviewIds = new Set(overviewCode.map((r) => r.id));
+    dedupedRanked = [
+      ...overviewCode,
+      ...dedupedRanked.filter((r) => !overviewIds.has(r.id)),
+    ];
+  }
   const finalUnified = dedupedRanked.slice(
     0,
     Math.max(0, totalSlots - manualResults.length),
@@ -105,11 +122,18 @@ export async function mergeAndRerank(
 export function codeToUnified(result: CodeSearchResult): UnifiedResult {
   return {
     id: result.chunk.id,
-    content: result.chunk.content,
+    content: result.contextHint
+      ? `${result.contextHint}\nRepository: ${result.chunk.repo_name}\nFile: ${result.chunk.file_path}\n\n${result.chunk.content}`
+      : result.chunk.content,
     similarity: result.similarity,
     origin: "code",
     codeResult: result,
   };
+}
+
+function isProjectOverviewQuestion(question: string): boolean {
+  return /\b(summary|summarize|overview|what is|explain|describe)\b/i.test(question) &&
+    /\b(project|repo|repository|codebase|app|application|product)\b/i.test(question);
 }
 
 export function messageToUnified(result: SearchResult): UnifiedResult {

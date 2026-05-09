@@ -269,6 +269,75 @@ export const OperationalMemoryRepository = {
     return (await this.findById(args.workspaceId, memory.id)) ?? memory;
   },
 
+  async listOrganizationCandidates(
+    workspaceId: string,
+    kind: OperationalMemoryKind,
+    limit = 40,
+  ): Promise<OperationalMemory[]> {
+    const supabase = getSupabaseClient();
+    const { data, error } = await supabase
+      .from("operational_memories")
+      .select("*, operational_memory_evidence(*)")
+      .eq("workspace_id", workspaceId)
+      .eq("kind", kind)
+      .in("status", ["proposed", "approved"])
+      .order("updated_at", { ascending: false })
+      .limit(limit);
+
+    if (error) {
+      throw new AppError(
+        `Failed to list operational memory candidates: ${error.message}`,
+        500,
+      );
+    }
+    return (data ?? []).map(mapMemoryRow);
+  },
+
+  async mergeProposalIntoMemory(args: {
+    workspaceId: string;
+    memoryId: string;
+    agentName: string;
+    proposal: ProposedOperationalMemory;
+    status?: OperationalMemoryStatus;
+  }): Promise<OperationalMemory> {
+    const current = await this.findById(args.workspaceId, args.memoryId);
+    if (!current) {
+      throw new AppError("Operational memory not found", 404);
+    }
+
+    const p = args.proposal;
+    const mergedEvidence = mergeEvidence(current.evidence, p.evidence);
+    const patch: Record<string, unknown> = {
+      title: p.title.length > current.title.length ? p.title : current.title,
+      summary: p.summary.length > current.summary.length ? p.summary : current.summary,
+      body: p.body.length > current.body.length ? p.body : current.body,
+      confidence: Math.max(current.confidence, p.confidence),
+      freshness_at: (p.freshnessAt ?? new Date()).toISOString(),
+      created_by_agent: current.created_by_agent || args.agentName,
+    };
+    if (args.status) {
+      patch.status = args.status;
+      if (args.status === "approved") patch.approved_by = null;
+    }
+
+    const supabase = getSupabaseClient();
+    const { error } = await supabase
+      .from("operational_memories")
+      .update(patch)
+      .eq("workspace_id", args.workspaceId)
+      .eq("id", args.memoryId);
+
+    if (error) {
+      throw new AppError(
+        `Failed to merge operational memory: ${error.message}`,
+        500,
+      );
+    }
+
+    await this.replaceEvidence(args.memoryId, mergedEvidence);
+    return (await this.findById(args.workspaceId, args.memoryId)) ?? current;
+  },
+
   async replaceEvidence(
     memoryId: string,
     evidence: ProposedOperationalMemory["evidence"],
@@ -337,6 +406,25 @@ export const OperationalMemoryRepository = {
 
     if (error) {
       throw new AppError(`Failed to approve memory: ${error.message}`, 500);
+    }
+    return mapMemoryRow(data);
+  },
+
+  async approveAutomatically(
+    workspaceId: string,
+    memoryId: string,
+  ): Promise<OperationalMemory> {
+    const supabase = getSupabaseClient();
+    const { data, error } = await supabase
+      .from("operational_memories")
+      .update({ status: "approved", approved_by: null })
+      .eq("workspace_id", workspaceId)
+      .eq("id", memoryId)
+      .select()
+      .single();
+
+    if (error) {
+      throw new AppError(`Failed to auto-approve memory: ${error.message}`, 500);
     }
     return mapMemoryRow(data);
   },

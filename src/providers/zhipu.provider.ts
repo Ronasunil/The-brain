@@ -63,8 +63,9 @@ export class ZhipuProvider implements AIProvider {
     userPrompt: string,
     options: ChatCompletionOptions = {},
   ): Promise<AIProviderResult<string>> {
+    const model = options.model ?? this.config.chatModel;
     const response = await this.client.chat.completions.create({
-      model: this.config.chatModel,
+      model,
       messages: [
         { role: "system", content: systemPrompt },
         { role: "user", content: userPrompt },
@@ -82,7 +83,7 @@ export class ZhipuProvider implements AIProvider {
     return {
       value: text,
       provider: this.name,
-      model: this.config.chatModel,
+      model,
       operation: "chat_completion",
       usage: {
         inputTokens,

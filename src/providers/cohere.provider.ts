@@ -90,8 +90,9 @@ export class CohereProvider implements AIProvider {
     userPrompt: string,
     options: ChatCompletionOptions = {},
   ): Promise<AIProviderResult<string>> {
+    const model = options.model ?? this.config.chatModel;
     const response = await this.client.chat({
-      model: this.config.chatModel,
+      model,
       message: userPrompt,
       preamble: systemPrompt,
       temperature: options.temperature ?? 0.3,
@@ -107,7 +108,7 @@ export class CohereProvider implements AIProvider {
     return {
       value: text,
       provider: this.name,
-      model: this.config.chatModel,
+      model,
       operation: "chat_completion",
       usage: {
         inputTokens,

@@ -506,6 +506,9 @@ function describeResult(item: UnifiedResult): string {
   if (msg?.chat_name === "operational_memory") {
     return `approved operational memory "${msg.content.split("\n")[0]}"`;
   }
+  if (msg?.chat_name === "operational_context") {
+    return `operational graph fact "${msg.content.split("\n")[0]}"`;
+  }
   return msg ? `${msg.source} context from ${msg.chat_name}` : "retrieved context";
 }
 
@@ -543,6 +546,8 @@ function buildPlanSources(ranked: UnifiedResult[]): BrainAnswerSource[] {
     const source: BrainAnswerSource["source"] =
       msg?.chat_name === "operational_memory"
         ? "operational_memory"
+        : msg?.chat_name === "operational_context"
+          ? "operational_context"
         : msg?.source ?? "web";
     return {
       content: msg?.content ?? item.content,

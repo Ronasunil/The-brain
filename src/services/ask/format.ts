@@ -172,5 +172,7 @@ function sourceLabel(
 ): BrainAnswerSource["source"] {
   return msg.chat_name === "operational_memory"
     ? "operational_memory"
+    : msg.chat_name === "operational_context"
+      ? "operational_context"
     : msg.source;
 }

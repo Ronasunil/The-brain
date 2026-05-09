@@ -13,7 +13,9 @@ import {
   memoryToSearchText,
   OperationalMemoryRepository,
 } from "../../db/operational-memory.repository";
+import { OperationalContextGraphRepository } from "../../db/operational-context-graph.repository";
 import { OPERATIONAL_AGENT_MODULES } from "./modules";
+import { organizeOperationalMemoryProposal } from "./organizer";
 
 function serializeResult(result: AgentResult): Record<string, unknown> {
   return {
@@ -88,6 +90,10 @@ export const AgentOrchestrator = {
     processNow?: boolean;
   }): Promise<AgentEvent> {
     const event = await AgentEventRepository.create(input);
+    OperationalContextGraphRepository.indexEvent(event).catch((err) => {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.warn(`Operational context event indexing skipped: ${msg}`);
+    });
     if (input.processNow !== false) {
       this.processEvent(event).catch((err) => {
         console.error("Operational agent event failed:", err);
@@ -120,6 +126,10 @@ export const AgentOrchestrator = {
       type: "user_agent_request",
       subjectRefs: [{ type: "chat_request", id: input.userId }],
       payload: { content: input.request },
+    });
+    OperationalContextGraphRepository.indexEvent(event).catch((err) => {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.warn(`Operational context request indexing skipped: ${msg}`);
     });
 
     const context: AgentContext = {
@@ -206,18 +216,45 @@ export const AgentOrchestrator = {
       try {
         const result = await module.run(context);
         context.moduleResults[module.name] = result;
-        await AgentRunRepository.complete(run.id, serializeResult(result));
 
         if (module.name !== "MemoryCriticAgent") {
           for (const p of result.proposedMemories.filter(isValidProposal)) {
-            const memory = await OperationalMemoryRepository.createProposal({
+            const organized = await organizeOperationalMemoryProposal({
               workspaceId: context.workspaceId,
               agentName: module.name,
               proposal: p,
             });
+            result.notes.push(
+              `MemoryOrganizerAgent: ${organized.action} - ${organized.rationale}`,
+            );
+            if (organized.action === "reject") continue;
+
+            let memory =
+              organized.action === "merge_into_existing" && organized.targetMemoryId
+                ? await OperationalMemoryRepository.mergeProposalIntoMemory({
+                    workspaceId: context.workspaceId,
+                    memoryId: organized.targetMemoryId,
+                    agentName: `${module.name}+MemoryOrganizerAgent`,
+                    proposal: organized.proposal,
+                    status: organized.shouldApprove ? "approved" : undefined,
+                  })
+                : await OperationalMemoryRepository.createProposal({
+                    workspaceId: context.workspaceId,
+                    agentName: `${module.name}+MemoryOrganizerAgent`,
+                    proposal: organized.proposal,
+                  });
+
+            if (organized.shouldApprove && memory.status === "proposed") {
+              memory = await OperationalMemoryRepository.approveAutomatically(
+                context.workspaceId,
+                memory.id,
+              );
+            }
             await embedMemory(memory);
+            await OperationalContextGraphRepository.indexMemory(memory);
           }
         }
+        await AgentRunRepository.complete(run.id, serializeResult(result));
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         await AgentRunRepository.fail(run.id, msg);

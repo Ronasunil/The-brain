@@ -77,6 +77,7 @@ export interface AIProviderResult<T> {
 export interface ChatCompletionOptions {
   temperature?: number;
   maxTokens?: number;
+  model?: string;
 }
 
 /**

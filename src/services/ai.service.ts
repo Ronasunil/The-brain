@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { getAIProvider } from "../providers";
+import { createAIProvider, getAIProvider } from "../providers";
 import { SYSTEM_PROMPT } from "../lib/constants/app.constants";
 import { SearchResult, CodeSearchResult, Entity } from "../lib/types";
 import {
@@ -176,7 +176,8 @@ export const AIService = {
               ? `:${chunk.line_start}-${chunk.line_end}`
               : "";
           const safeContent = sanitizeForPrompt(chunk.content);
-          return `[Code ${index + 1}] ${chunk.file_path}${location} (${chunk.language ?? "unknown"})\n${safeContent}`;
+          const hint = result.contextHint ? `${result.contextHint}\n` : "";
+          return `[Code ${index + 1}] ${chunk.repo_name}/${chunk.file_path}${location} (${chunk.language ?? "unknown"})\n${hint}${safeContent}`;
         })
         .join("\n\n");
       codeBlock = `Relevant code from the project repository:\n${codeSnippets}\n\n`;
@@ -213,6 +214,10 @@ CRITICAL — answer in natural English:
   • NEVER invent ticket IDs, titles, counts, or dates that don't appear above.`;
     }
 
+    if (hasCode) {
+      systemPrompt += `\n11. If the user asks for a project, repository, app, or codebase summary and code snippets are provided, summarize what the codebase appears to do from those snippets. Do not say there is no project information merely because chat messages are sparse. Prefer README, package/config, docs, and entrypoint snippets when present.`;
+    }
+
     const result = await provider.generateChatCompletion(systemPrompt, userPrompt, {
       temperature: 0.3,
       maxTokens: 500,
@@ -242,5 +247,37 @@ CRITICAL — answer in natural English:
   supportsRerank(): boolean {
     const provider = getAIProvider();
     return provider.supportsRerank;
+  },
+
+  async generateOpenAIJson(
+    systemPrompt: string,
+    userPrompt: string,
+    tracking?: TokenUsageTracking,
+    options: { model?: string; maxTokens?: number; temperature?: number } = {},
+  ): Promise<unknown> {
+    const provider = createAIProvider("openai");
+    const result = await provider.generateChatCompletion(systemPrompt, userPrompt, {
+      model: options.model ?? "gpt-4.1-mini",
+      temperature: options.temperature ?? 0.1,
+      maxTokens: options.maxTokens ?? 900,
+    });
+    await TokenUsageService.recordFromProvider(result, {
+      ...tracking,
+      operation: "chat_completion",
+    });
+
+    const raw = result.value.trim();
+    const fenced = raw.match(/```(?:json)?\s*([\s\S]*?)```/i)?.[1]?.trim();
+    const jsonText = fenced ?? raw;
+    try {
+      return JSON.parse(jsonText);
+    } catch {
+      const start = jsonText.indexOf("{");
+      const end = jsonText.lastIndexOf("}");
+      if (start >= 0 && end > start) {
+        return JSON.parse(jsonText.slice(start, end + 1));
+      }
+      throw new Error("OpenAI JSON response could not be parsed");
+    }
   },
 };

@@ -45,6 +45,10 @@ export async function runSemanticRetrieval(
   opts: RetrieveSemanticOpts,
 ): Promise<{ merged: MergedRetrieval; sources: Set<SourceName> }> {
   const sources = selectSources(opts.route);
+  if (isProjectOverviewQuestion(opts.question)) {
+    sources.add("code_vec");
+    sources.add("code_fts");
+  }
   const ctx = await buildFetchCtx(opts);
 
   const buckets = await Promise.all(
@@ -65,6 +69,11 @@ export async function runSemanticRetrieval(
       code: dedupeByChunkId(grouped.code),
     },
   };
+}
+
+function isProjectOverviewQuestion(question: string): boolean {
+  return /\b(summary|summarize|overview|what is|explain|describe)\b/i.test(question) &&
+    /\b(project|repo|repository|codebase|app|application|product)\b/i.test(question);
 }
 
 // ─── Internals ──────────────────────────────────

@@ -16,7 +16,8 @@ export type SourceName =
   | "code_vec"
   | "code_fts"
   | "operational_memory_vec"
-  | "operational_memory_fts";
+  | "operational_memory_fts"
+  | "operational_context_fts";
 
 export const ALL_SOURCES: ReadonlySet<SourceName> = new Set<SourceName>([
   "manual",
@@ -29,6 +30,7 @@ export const ALL_SOURCES: ReadonlySet<SourceName> = new Set<SourceName>([
   "code_fts",
   "operational_memory_vec",
   "operational_memory_fts",
+  "operational_context_fts",
 ]);
 
 const LINEAR_SOURCES: ReadonlySet<SourceName> = new Set<SourceName>([
@@ -52,6 +54,7 @@ const MIXED_SOURCES: ReadonlySet<SourceName> = new Set<SourceName>([
   ...CHAT_SOURCES,
   "operational_memory_vec",
   "operational_memory_fts",
+  "operational_context_fts",
 ]);
 
 /**
@@ -88,6 +91,7 @@ export function selectSources(scope: RetrievalScope | null): Set<SourceName> {
       "manual",
       "operational_memory_vec",
       "operational_memory_fts",
+      "operational_context_fts",
       ...domainSources,
     ]);
 

@@ -149,6 +149,61 @@ export const CodeChunkRepository = {
     }));
   },
 
+  async listProjectOverview(
+    workspaceId: string,
+    limit: number = 8,
+    integrationId?: string,
+  ): Promise<CodeSearchResult[]> {
+    const supabase = getSupabaseClient();
+    let query = supabase
+      .from("code_chunks")
+      .select()
+      .eq("workspace_id", workspaceId)
+      .order("file_path", { ascending: true })
+      .limit(1000);
+
+    if (integrationId) query = query.eq("integration_id", integrationId);
+
+    const { data, error } = await query;
+    if (error) {
+      throw new Error(`Code chunk overview fetch failed: ${error.message}`);
+    }
+
+    const scored = (data || [])
+      .map((row: any) => {
+        const path = String(row.file_path ?? "").toLowerCase();
+        const content = String(row.content ?? "").toLowerCase();
+        let score = 0.28;
+        if (/(^|\/)readme(\.[a-z0-9]+)?$/.test(path)) score += 0.7;
+        if (/(^|\/)(package\.json|pyproject\.toml|cargo\.toml|go\.mod)$/.test(path)) {
+          score += 0.58;
+        }
+        if (/(^|\/)(vite\.config|next\.config|nuxt\.config|tsconfig\.json|dockerfile|compose\.ya?ml)$/.test(path)) {
+          score += 0.34;
+        }
+        if (path.startsWith("docs/") || path.includes("/docs/")) score += 0.38;
+        if (/(^|\/)(src|app|lib)\/(app|main|index|server|routes|api|page)\.[a-z0-9.]+$/.test(path)) {
+          score += 0.28;
+        }
+        if (/\b(description|architecture|overview|getting started|features|scripts|dependencies|routes|api)\b/.test(content)) {
+          score += 0.2;
+        }
+        if (/(^|\/)(demo|example|examples|test|tests|spec|stories|dist|build)\//.test(path)) {
+          score -= 0.22;
+        }
+        return { row, score: Math.min(0.98, score) };
+      })
+      .sort((a, b) => b.score - a.score)
+      .slice(0, limit);
+
+    return scored.map(({ row, score }) => ({
+      chunk: mapRow(row),
+      similarity: score,
+      contextHint:
+        "Project overview context. Use this to summarize the repository's purpose, stack, architecture, and main capabilities.",
+    }));
+  },
+
   async getUnembedded(limit: number = 50): Promise<CodeChunk[]> {
     const supabase = getSupabaseClient();
 

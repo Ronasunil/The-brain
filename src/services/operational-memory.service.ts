@@ -1,5 +1,6 @@
 import {
   AgentRun,
+  OperationalContextGraph,
   OperationalGraph,
   OperationalMemory,
   OperationalMemoryKind,
@@ -9,6 +10,7 @@ import {
   AgentRunRepository,
   OperationalMemoryRepository,
 } from "../db/operational-memory.repository";
+import { OperationalContextGraphRepository } from "../db/operational-context-graph.repository";
 import { AgentOrchestrator } from "./operational-memory/orchestrator";
 import { AIService } from "./ai.service";
 import { AppError } from "../lib/errors";
@@ -43,6 +45,7 @@ export const OperationalMemoryService = {
     if (patch.title || patch.summary || patch.body) {
       await this.refreshEmbedding(memory);
     }
+    await OperationalContextGraphRepository.indexMemory(memory);
     return memory;
   },
 
@@ -76,6 +79,7 @@ export const OperationalMemoryService = {
       payload: { title: memory.title, kind: memory.kind },
     });
     await this.refreshEmbedding(memory);
+    await OperationalContextGraphRepository.indexMemory(memory);
     return memory;
   },
 
@@ -100,6 +104,14 @@ export const OperationalMemoryService = {
 
   graph(workspaceId: string): Promise<OperationalGraph> {
     return OperationalMemoryRepository.graph(workspaceId);
+  },
+
+  contextGraph(workspaceId: string): Promise<OperationalContextGraph> {
+    return OperationalContextGraphRepository.graph(workspaceId);
+  },
+
+  operationalContext(workspaceId: string): Promise<string> {
+    return OperationalContextGraphRepository.context(workspaceId);
   },
 
   agentRuns(workspaceId: string): Promise<AgentRun[]> {

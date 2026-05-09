@@ -186,3 +186,101 @@ export interface OperationalMemorySearchResult {
   memory: OperationalMemory;
   similarity: number;
 }
+
+export type OperationalEpisodeType = "event" | "message" | "text" | "json" | "memory";
+
+export type OperationalEntityKind =
+  | "person"
+  | "repo"
+  | "service"
+  | "workflow"
+  | "decision"
+  | "owner"
+  | "ticket"
+  | "tool"
+  | "file"
+  | "memory"
+  | "risk"
+  | "customer_signal"
+  | "unknown";
+
+export type OperationalFactStatus =
+  | "active"
+  | "superseded"
+  | "rejected"
+  | "archived";
+
+export interface OperationalEpisode {
+  id: string;
+  workspace_id: string;
+  source_type: string;
+  source_id: string;
+  episode_type: OperationalEpisodeType;
+  content: string;
+  occurred_at: Date;
+  metadata: Record<string, unknown>;
+  created_at: Date;
+}
+
+export interface OperationalEntity {
+  id: string;
+  workspace_id: string;
+  kind: OperationalEntityKind;
+  name: string;
+  normalized_name: string;
+  summary: string;
+  confidence: number;
+  first_seen_at: Date;
+  last_seen_at: Date;
+  metadata: Record<string, unknown>;
+  created_at: Date;
+  updated_at: Date;
+}
+
+export interface OperationalFact {
+  id: string;
+  workspace_id: string;
+  subject_entity_id: string;
+  predicate: string;
+  object_entity_id: string | null;
+  object_text: string | null;
+  fact: string;
+  status: OperationalFactStatus;
+  confidence: number;
+  valid_from: Date;
+  valid_until: Date | null;
+  superseded_by: string | null;
+  source_episode_id: string | null;
+  source_memory_id: string | null;
+  evidence: Record<string, unknown>[];
+  metadata: Record<string, unknown>;
+  created_at: Date;
+  updated_at: Date;
+}
+
+export interface OperationalContextGraph {
+  nodes: Array<{
+    id: string;
+    type: "entity" | "memory" | "tool" | "episode";
+    label: string;
+    kind?: string;
+    status?: string;
+    confidence?: number;
+    summary?: string;
+    meta?: Record<string, unknown>;
+  }>;
+  edges: Array<{
+    id: string;
+    from: string;
+    to: string;
+    kind: string;
+    label?: string;
+    confidence: number;
+    status?: string;
+    valid_from?: Date;
+    valid_until?: Date | null;
+    meta?: Record<string, unknown>;
+  }>;
+  facts: OperationalFact[];
+  episodes: OperationalEpisode[];
+}

@@ -132,7 +132,7 @@ export interface LinearTicketCardIssue {
 export interface BrainAnswerSource {
   content: string;
   user_name: string;
-  source: MessageSource | "github" | "operational_memory";
+  source: MessageSource | "github" | "operational_memory" | "operational_context";
   timestamp: Date;
   similarity: number;
   file_path?: string;

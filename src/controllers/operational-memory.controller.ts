@@ -89,6 +89,24 @@ export const OperationalMemoryController = {
     });
   }),
 
+  contextGraph: withErrorHandler(async (req: Request, res: Response) => {
+    const graph = await OperationalMemoryService.contextGraph(workspaceId(req));
+    res.status(200).json({
+      status: 200,
+      data: graph,
+      message: "Operational context graph fetched",
+    });
+  }),
+
+  context: withErrorHandler(async (req: Request, res: Response) => {
+    const context = await OperationalMemoryService.operationalContext(workspaceId(req));
+    res.status(200).json({
+      status: 200,
+      data: { context },
+      message: "Operational context fetched",
+    });
+  }),
+
   agentRuns: withErrorHandler(async (req: Request, res: Response) => {
     const runs = await OperationalMemoryService.agentRuns(workspaceId(req));
     res.status(200).json({

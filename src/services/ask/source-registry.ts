@@ -8,6 +8,7 @@ import {
   memoryToSearchText,
   OperationalMemoryRepository,
 } from "../../db/operational-memory.repository";
+import { OperationalContextGraphRepository } from "../../db/operational-context-graph.repository";
 import {
   SearchResult,
   CodeSearchResult,
@@ -125,12 +126,7 @@ export const SOURCE_FETCHERS: Record<SourceName, Fetcher> = {
 
   code_fts: async (c) => ({
     kind: "code",
-    results: await CodeChunkRepository.searchFullText(
-      c.question,
-      c.workspaceId,
-      FULLTEXT_SEARCH_LIMIT,
-      c.integrationId,
-    ),
+    results: await fetchCodeFullTextOrOverview(c),
   }),
 
   operational_memory_vec: async (c) => ({
@@ -155,7 +151,50 @@ export const SOURCE_FETCHERS: Record<SourceName, Fetcher> = {
       )
     ).map((r) => operationalMemoryToSearchResult(r.memory, r.similarity)),
   }),
+
+  operational_context_fts: async (c) => ({
+    kind: "messages",
+    results: (
+      await OperationalContextGraphRepository.searchFacts(
+        c.question,
+        c.workspaceId,
+        FULLTEXT_SEARCH_LIMIT,
+      )
+    ).map((r) => operationalFactToSearchResult(r.fact, r.similarity)),
+  }),
 };
+
+async function fetchCodeFullTextOrOverview(c: FetchCtx): Promise<CodeSearchResult[]> {
+  const results = await CodeChunkRepository.searchFullText(
+    c.question,
+    c.workspaceId,
+    FULLTEXT_SEARCH_LIMIT,
+    c.integrationId,
+  );
+  if (!isProjectOverviewQuestion(c.question)) {
+    return results;
+  }
+
+  const overview = await CodeChunkRepository.listProjectOverview(
+    c.workspaceId,
+    Math.min(10, Math.max(8, c.fetchCount)),
+    c.integrationId,
+  );
+
+  const seen = new Set<string>();
+  return [...overview, ...results]
+    .filter((result) => {
+      if (seen.has(result.chunk.id)) return false;
+      seen.add(result.chunk.id);
+      return true;
+    })
+    .slice(0, Math.max(overview.length, 12));
+}
+
+function isProjectOverviewQuestion(question: string): boolean {
+  return /\b(summary|summarize|overview|what is|explain|describe)\b/i.test(question) &&
+    /\b(project|repo|repository|codebase|app|application|product)\b/i.test(question);
+}
 
 function operationalMemoryToSearchResult(
   memory: Awaited<
@@ -178,6 +217,34 @@ function operationalMemoryToSearchResult(
       timestamp: memory.freshness_at,
       embedding: null,
       created_at: memory.created_at,
+    },
+    similarity,
+  };
+}
+
+function operationalFactToSearchResult(
+  fact: Awaited<
+    ReturnType<typeof OperationalContextGraphRepository.searchFacts>
+  >[number]["fact"],
+  similarity: number,
+): SearchResult {
+  return {
+    message: {
+      id: `operational_fact:${fact.id}`,
+      workspace_id: fact.workspace_id,
+      integration_id: "",
+      source: "web",
+      source_message_id: fact.id,
+      user_name: "Operational Graph",
+      user_id: "",
+      chat_id: fact.predicate,
+      chat_name: "operational_context",
+      content: `[operational fact | ${fact.status} | confidence ${Math.round(
+        fact.confidence * 100,
+      )}% | valid from ${fact.valid_from.toISOString().slice(0, 10)}] ${fact.fact}`,
+      timestamp: fact.valid_from,
+      embedding: null,
+      created_at: fact.created_at,
     },
     similarity,
   };

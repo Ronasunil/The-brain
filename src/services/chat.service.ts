@@ -3,7 +3,6 @@ import { BrainService } from "./brain.service";
 import { ChatMessage, BrainAnswer } from "../lib/types";
 import { MessageService } from "./message.service";
 import { IntegrationService } from "./integration.service";
-import { AgentOrchestrator } from "./operational-memory/orchestrator";
 import { OperationalMemoryService } from "./operational-memory.service";
 
 export const ChatService = {
@@ -117,19 +116,7 @@ async function ingestChatMessageForMemory(args: {
     console.warn(`Chat memory ingestion skipped: ${msg}`);
   }
 
-  try {
-    await AgentOrchestrator.recordEvent({
-      workspaceId: args.workspaceId,
-      type: "chat_message_ingested",
-      subjectRefs: [{ type: "chat_message", id: args.chatMessageId }],
-      payload: {
-        content: args.content,
-        user_id: args.userId,
-        user_name: args.userName,
-      },
-    });
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    console.warn(`Operational agent event skipped: ${msg}`);
-  }
+  // MessageService.ingest already records one operational agent event for this
+  // content. Recording a second chat_message_ingested event here duplicates
+  // graph facts for a single user message.
 }
